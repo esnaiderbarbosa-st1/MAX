@@ -4,7 +4,7 @@
 
 # Run and deploy your AI Studio app
 
-This contains everything you need to run your app locally.
+App de treinos (musculação e corrida) para Android. Desenvolvido em vibe code no Google AI Studio. Este repositório serve para versionamento e backup do código.
 
 View your app in AI Studio: https://ai.studio/apps/3c4b4e68-b6e7-438d-a40d-582834489699
 
