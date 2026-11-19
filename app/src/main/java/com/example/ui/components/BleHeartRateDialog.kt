@@ -671,18 +671,20 @@ fun BleHeartRatePairingBottomSheet(
                 )
             }
 
-            TextButton(
-                onClick = {
-                    bleManager.startSimulation()
-                    onDismiss()
+            if (com.example.BuildConfig.DEBUG) {
+                TextButton(
+                    onClick = {
+                        bleManager.startSimulation()
+                        onDismiss()
+                    }
+                ) {
+                    Text(
+                        text = "Simular Cinta GEHOD H500 (Modo Teste)",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp,
+                        textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
+                    )
                 }
-            ) {
-                Text(
-                    text = "Simular Cinta GEHOD H500 (Modo Teste)",
-                    color = Color(0xFF94A3B8),
-                    fontSize = 12.sp,
-                    textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
-                )
             }
 
             Text(

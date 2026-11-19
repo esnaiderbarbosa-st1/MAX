@@ -174,10 +174,11 @@ fun RunningSessionDetailScreen(viewModel: MainViewModel) {
         "--:--"
     }
 
-    val userWeight = userProfile?.peso ?: 70.0f
-    val caloriesKcal = remember(currentSession.distanceMeters, userWeight) {
-        ((currentSession.distanceMeters / 1000.0) * userWeight * 1.03).toInt()
-            .coerceAtLeast((currentSession.durationSec / 60) * 5)
+    val caloriesKcal = remember(currentSession.distanceMeters, userProfile) {
+        com.example.data.model.calculateRunActiveCaloriesKcal(
+            distanceMeters = currentSession.distanceMeters,
+            userProfile = userProfile
+        )
     }
 
     var selectedSplitMode by remember { mutableStateOf(SplitSelectorMode.ONE_KM_MAIN) }

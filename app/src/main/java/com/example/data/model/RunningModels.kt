@@ -831,9 +831,7 @@ data class SprintAnalytics(
 fun RunningSession.isSimulatedOrTestSession(): Boolean {
     return id.startsWith("demo", ignoreCase = true) ||
             id.startsWith("sim", ignoreCase = true) ||
-            id.startsWith("test", ignoreCase = true) ||
-            notes?.contains("simul", ignoreCase = true) == true ||
-            notes?.contains("teste", ignoreCase = true) == true
+            id.startsWith("test", ignoreCase = true)
 }
 
 /**
@@ -2348,6 +2346,7 @@ data class RunPhysiologyDossier(
     val activeCaloriesKcal: Int,
     val basalCaloriesKcal: Int,
     val totalCaloriesKcal: Int,
+    val isWeightMissingForCalories: Boolean = false,
     val totalActiveCaloriesWithWarmupKcal: Int = activeCaloriesKcal,
     val totalCaloriesWithWarmupKcal: Int = totalCaloriesKcal,
     val avgPaceSecPerKm: Int,
@@ -2394,6 +2393,25 @@ fun formatPaceMinSecQuote(paceSecPerKm: Int): String {
 }
 
 /**
+ * Função única de cálculo de calorias ativas de corrida (`pesoKg × km × 1.036`).
+ * Usa o peso real do perfil (via `resolveValidWeightKgOrNull` / `resolveWeightKg`); sem peso válido (> 0),
+ * retorna `null` em vez de assumir 70 kg silenciosamente.
+ */
+fun calculateRunActiveCaloriesKcal(
+    distanceMeters: Int,
+    userProfile: UserProfileData?,
+    weightKgOverride: Float? = null
+): Int? {
+    val validWeightKg = weightKgOverride?.takeIf { it > 0f }
+        ?: resolveValidWeightKgOrNull(userProfile)
+        ?: return null
+    if (distanceMeters <= 0) return 0
+    return ((distanceMeters / 1000.0) * validWeightKg * 1.036)
+        .roundToInt()
+        .coerceAtLeast(1)
+}
+
+/**
  * Constrói o Dossiê Fisiológico e Biomecânico completo da sessão, garantindo 100% de coerência
  * matemática entre distância, duração, passos, cadência, passada média (`(distanciaMetros * 100) / passosDoBloco`)
  * e calorias do bloco principal (`~1.036 * pesoKg * distanciaKm`), separando o total com aquecimento/desaquecimento na legenda.
@@ -2436,17 +2454,20 @@ fun buildRunPhysiologyDossier(
         }.let { if (it > 0) it.coerceIn(140, 1200) else 0 }
     }
 
-    // 1. Calorias Ativas vs. Total de Kcal (ESTRITAMENTE do bloco principal no card principal; total c/ aquecimento separado)
-    val userWeightKg = resolveWeightKg(userProfile)
-    val heightCm = (userProfile?.heightCm?.takeIf { it > 0 } ?: userProfile?.altura?.takeIf { it > 0 } ?: 187)
-    val ageYears = (userProfile?.idade?.takeIf { it > 0 } ?: 50)
+    // 1. Calorias Ativas vs. Total de Kcal (função única com peso válido; sem peso válido, não calcula com 70 kg silencioso)
+    val validWeightKg = resolveValidWeightKgOrNull(userProfile)
+    val userWeightKg = validWeightKg ?: resolveWeightKg(userProfile)
+    val heightCm = userProfile?.heightCm?.takeIf { it > 0 } ?: userProfile?.altura?.takeIf { it > 0 }
+    val ageYears = userProfile?.idade?.takeIf { it > 0 }
     val isFemale = userProfile?.sexo?.equals("Feminino", ignoreCase = true) == true
 
-    val tmb24h: Float = if (userProfile != null && userProfile.tmb > 800) {
-        userProfile.tmb.toFloat()
-    } else {
-        val baseMifflin = (10f * userWeightKg) + (6.25f * heightCm) - (5f * ageYears) + (if (isFemale) -161f else 5f)
-        baseMifflin.coerceIn(1100f, 2800f)
+    val tmb24h: Float? = when {
+        userProfile != null && userProfile.tmb > 800 -> userProfile.tmb.toFloat()
+        validWeightKg != null && heightCm != null && ageYears != null -> {
+            val baseMifflin = (10f * validWeightKg) + (6.25f * heightCm) - (5f * ageYears) + (if (isFemale) -161f else 5f)
+            baseMifflin.coerceIn(1100f, 2800f)
+        }
+        else -> null
     }
 
     val durationMinutes = effectiveDurationSec / 60f
@@ -2456,37 +2477,39 @@ fun buildRunPhysiologyDossier(
     val computedMainActiveKcal = if (!hasRealDisplacement) {
         0
     } else {
-        ((effectiveDistanceMeters / 1000.0) * userWeightKg * 1.036)
-            .roundToInt()
-            .coerceAtLeast(1)
+        calculateRunActiveCaloriesKcal(effectiveDistanceMeters, userProfile)
     }
-    val activeCaloriesKcal = adv?.watchSyncedActiveKcal?.takeIf { it > 0 } ?: computedMainActiveKcal
+    val syncedActiveKcal = adv?.watchSyncedActiveKcal?.takeIf { it > 0 }
+    val isWeightMissingForCalories = hasRealDisplacement && syncedActiveKcal == null && computedMainActiveKcal == null
+    val activeCaloriesKcal = syncedActiveKcal ?: computedMainActiveKcal ?: 0
 
-    val basalProportionalKcal = if (!hasRealDisplacement) {
+    val basalProportionalKcal = if (!hasRealDisplacement || isWeightMissingForCalories || tmb24h == null) {
         0
     } else {
         ((tmb24h / 1440f) * durationMinutes).roundToInt().coerceAtLeast(1)
     }
     val totalCaloriesKcal = adv?.watchSyncedTotalKcal?.takeIf { it > 0 }
-        ?: (activeCaloriesKcal + basalProportionalKcal)
+        ?: if (isWeightMissingForCalories) 0 else (activeCaloriesKcal + basalProportionalKcal)
 
     // Calorias totais incluindo aquecimento/desaquecimento (exibidas separadamente na legenda)
-    val totalActiveCaloriesWithWarmupKcal = if (!hasRealDisplacement) {
+    val totalActiveCaloriesWithWarmupKcal = if (!hasRealDisplacement || isWeightMissingForCalories) {
         0
-    } else if (adv?.watchSyncedActiveKcal != null && adv.watchSyncedActiveKcal > 0 && !hasMainRunIsolation) {
-        adv.watchSyncedActiveKcal
+    } else if (syncedActiveKcal != null && !hasMainRunIsolation) {
+        syncedActiveKcal
     } else {
-        ((totalSessionDistanceMeters / 1000.0) * userWeightKg * 1.036)
-            .roundToInt()
+        (calculateRunActiveCaloriesKcal(totalSessionDistanceMeters, userProfile) ?: activeCaloriesKcal)
             .coerceAtLeast(activeCaloriesKcal)
     }
-    val totalBasalWithWarmupKcal = if (!hasRealDisplacement) {
+    val totalBasalWithWarmupKcal = if (!hasRealDisplacement || isWeightMissingForCalories || tmb24h == null) {
         0
     } else {
         ((tmb24h / 1440f) * totalDurationMinutes).roundToInt().coerceAtLeast(basalProportionalKcal)
     }
-    val totalCaloriesWithWarmupKcal = (totalActiveCaloriesWithWarmupKcal + totalBasalWithWarmupKcal)
-        .coerceAtLeast(totalCaloriesKcal)
+    val totalCaloriesWithWarmupKcal = if (isWeightMissingForCalories) {
+        0
+    } else {
+        (totalActiveCaloriesWithWarmupKcal + totalBasalWithWarmupKcal).coerceAtLeast(totalCaloriesKcal)
+    }
 
     // 2. Identificação de Atleta, Badge e Data/Hora
     val rawName = userProfile?.nome?.trim().orEmpty()
@@ -2546,7 +2569,7 @@ fun buildRunPhysiologyDossier(
 
     // Auto-calibração dinâmica da FC Máxima Efetiva (effectiveMaxHr)
     val effectiveMaxHr = calculateEffectiveMaxHr(
-        ageYears = ageYears,
+        ageYears = ageYears ?: 30,
         sessionMaxHrBpm = targetMaxHr.takeIf { it > 0 },
         historicalPeakHrBpm = session.maxHr
     )
@@ -2880,6 +2903,7 @@ fun buildRunPhysiologyDossier(
         activeCaloriesKcal = activeCaloriesKcal,
         basalCaloriesKcal = basalProportionalKcal,
         totalCaloriesKcal = totalCaloriesKcal,
+        isWeightMissingForCalories = isWeightMissingForCalories,
         totalActiveCaloriesWithWarmupKcal = totalActiveCaloriesWithWarmupKcal,
         totalCaloriesWithWarmupKcal = totalCaloriesWithWarmupKcal,
         avgPaceSecPerKm = avgPaceSec,

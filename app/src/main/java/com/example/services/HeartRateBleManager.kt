@@ -912,6 +912,7 @@ class HeartRateBleManager private constructor(private val context: Context) {
     }
 
     fun startSimulation() {
+        if (!com.example.BuildConfig.DEBUG) return
         stopScan()
         disconnect()
         _connectedDeviceName.value = "GEHOD H500 (Simulado)"

@@ -114,11 +114,8 @@ fun getHrColorForBpm(bpm: Float): Color {
 }
 
 /**
- * Gera ou interpola amostras de frequência cardíaca respeitando o comportamento fisiológico real
- * (estilo Haylou Fun): subida inicial nos primeiros ~3 minutos a partir de ~95 bpm, entrada no platô
- * de esforço mantendo os batimentos predominantemente na faixa de 146–172 bpm, com quedas suaves de
- * ~15–20 bpm apenas nos intervalos reais de caminhada e micro-variações orgânicas (sem ondas senoidais
- * repetitivas de efeito mola).
+ * Retorna exclusivamente as amostras reais válidas de frequência cardíaca (45..240 bpm),
+ * sem alterar leituras gravadas nem fabricar dados sintéticos com Random.
  */
 fun generateRealisticHrSamples(
     sessionId: String?,
@@ -128,160 +125,7 @@ fun generateRealisticHrSamples(
     recordedSamples: List<Int> = emptyList(),
     splits: List<RecordedKmSplit> = emptyList()
 ): List<Int> {
-    val cleanRecorded = recordedSamples.filter { it in 45..225 }
-    val seed = (sessionId?.hashCode()?.toLong() ?: 98765L) +
-        (avgHr ?: 148) * 37L +
-        (maxHr ?: 176) * 19L +
-        durationSec * 7L
-    val random = java.util.Random(seed)
-
-    if (cleanRecorded.size >= 24) {
-        val enriched = IntArray(cleanRecorded.size)
-        for (i in cleanRecorded.indices) {
-            val raw = cleanRecorded[i]
-            val prev = if (i > 0) cleanRecorded[i - 1] else raw
-            val next = if (i < cleanRecorded.lastIndex) cleanRecorded[i + 1] else raw
-            if (raw == prev && raw == next && i > 0 && i < cleanRecorded.lastIndex) {
-                val micro = ((random.nextFloat() - 0.5f) * 2.4f).roundToInt()
-                enriched[i] = (raw + micro).coerceIn(80, maxHr ?: 205)
-            } else {
-                enriched[i] = raw
-            }
-        }
-        return enriched.toList()
-    }
-
-    val safeDuration = durationSec.coerceAtLeast(300)
-    val targetPoints = (safeDuration / 10).coerceIn(90, 150)
-    val peakHr = (maxHr ?: 176).coerceIn(150, 198)
-    val targetAvg = (avgHr ?: 148).coerceIn(120, (peakHr - 8).coerceAtLeast(126))
-
-    if (cleanRecorded.size in 2..23) {
-        val result = IntArray(targetPoints)
-        var driftNoise = 0f
-        for (i in 0 until targetPoints) {
-            val pos = i.toFloat() / (targetPoints - 1).coerceAtLeast(1) * (cleanRecorded.size - 1)
-            val idx0 = pos.toInt().coerceIn(0, cleanRecorded.size - 1)
-            val idx1 = (idx0 + 1).coerceIn(0, cleanRecorded.size - 1)
-            val frac = pos - idx0
-            val base = cleanRecorded[idx0] + (cleanRecorded[idx1] - cleanRecorded[idx0]) * frac
-            driftNoise = (driftNoise * 0.65f + (random.nextFloat() - 0.5f) * 2.8f).coerceIn(-3.5f, 3.5f)
-            result[i] = (base + driftNoise).roundToInt().coerceIn(84, peakHr)
-        }
-        return result.toList()
-    }
-
-    // Subida inicial nos primeiros ~3 minutos (180s) a partir de ~93-96 bpm
-    val startHr = (93 + random.nextInt(4)).toFloat()
-    val warmupFraction = (180f / safeDuration.toFloat()).coerceIn(0.09f, 0.15f)
-    val cooldownStartFraction = 0.94f
-
-    // Platô de esforço sustentado: mantém os batimentos predominantemente em 146–172 bpm
-    val plateauStartHr = (targetAvg + 2f).coerceIn(145f, (peakHr - 16f).coerceAtLeast(146f))
-    val plateauEndHr = (plateauStartHr + 13f).coerceIn(plateauStartHr + 6f, (peakHr - 5f).coerceAtLeast(158f))
-
-    // Identifica intervalos reais de caminhada via splits, ou cria apenas 2-3 recuperações espaçadas
-    data class WalkDipWindow(val centerFrac: Float, val halfWidth: Float, val dropBpm: Float)
-    val walkWindows = mutableListOf<WalkDipWindow>()
-    val totalSplitsDur = splits.sumOf { it.durationSec }
-    if (splits.isNotEmpty() && totalSplitsDur > 0 && splits.any { it.phaseTag == "WALK" }) {
-        var accSec = 0
-        for (sp in splits) {
-            val startF = accSec.toFloat() / totalSplitsDur.toFloat()
-            val endF = (accSec + sp.durationSec).toFloat() / totalSplitsDur.toFloat()
-            accSec += sp.durationSec
-            if (sp.phaseTag == "WALK" && startF > warmupFraction && endF < cooldownStartFraction) {
-                val c = (startF + endF) / 2f
-                val hw = ((endF - startF) * 0.55f).coerceIn(0.022f, 0.055f)
-                val drop = 15f + random.nextFloat() * 5f
-                walkWindows.add(WalkDipWindow(c, hw, drop))
-            }
-        }
-    }
-    if (walkWindows.isEmpty()) {
-        // Apenas 2 ou 3 quedas suaves de recuperação (~16-20 bpm) bem espaçadas ao longo da sessão
-        val dipCount = if (safeDuration >= 1200) 3 else 2
-        val dipCenters = if (dipCount == 3) {
-            floatArrayOf(0.33f, 0.58f, 0.81f)
-        } else {
-            floatArrayOf(0.42f, 0.74f)
-        }
-        for (c in dipCenters) {
-            val jitter = (random.nextFloat() - 0.5f) * 0.02f
-            val drop = 16f + random.nextFloat() * 4f // 16..20 bpm
-            walkWindows.add(WalkDipWindow((c + jitter).coerceIn(0.24f, 0.86f), 0.032f, drop))
-        }
-    }
-
-    // Pico máximo da sessão ocorre no terço médio-final de um bloco de tiro (longe das caminhadas)
-    val peakFrac = 0.68f + (random.nextFloat() - 0.5f) * 0.06f
-
-    val samples = FloatArray(targetPoints)
-    var current = startHr
-    var organicWalk = 0f
-
-    for (i in 0 until targetPoints) {
-        val progress = i.toFloat() / (targetPoints - 1).coerceAtLeast(1)
-
-        val baseEnvelope = when {
-            progress < warmupFraction -> {
-                // Curva fisiológica de subida inicial (0 a ~3 min): 95 -> ~147 bpm
-                val p = (progress / warmupFraction).coerceIn(0f, 1f)
-                val rise = 1f - exp(-3.4f * p)
-                startHr + (plateauStartHr - startHr) * (rise / (1f - exp(-3.4f)))
-            }
-            progress <= cooldownStartFraction -> {
-                // Platô sustentado de esforço com leve deriva cardiovascular (146..168 bpm)
-                val p = (progress - warmupFraction) / (cooldownStartFraction - warmupFraction)
-                val slowDrift = p * (plateauEndHr - plateauStartHr)
-                // Pequenas elevações suaves de esforço durante os blocos de tiro (+3 a +5 bpm)
-                val sprintPush = if (p in 0.15f..0.88f) 3.2f else 1.0f
-                plateauStartHr + slowDrift + sprintPush
-            }
-            else -> {
-                // Desaquecimento final suave nos últimos ~1.5 min
-                val p = (progress - cooldownStartFraction) / (1f - cooldownStartFraction).coerceAtLeast(0.01f)
-                plateauEndHr - p * 16f
-            }
-        }
-
-        // Quedas fisiológicas suaves apenas nas janelas de caminhada
-        var walkDipMod = 0f
-        for (w in walkWindows) {
-            val dist = (progress - w.centerFrac) / w.halfWidth
-            if (abs(dist) < 2.6f) {
-                walkDipMod -= w.dropBpm * exp(-(dist * dist) * 0.85f)
-            }
-        }
-
-        // Impulso do tiro mais forte (PR) levando ao BPM Máximo real sem criar ondas artificiais
-        val distToPeak = (progress - peakFrac) / 0.042f
-        val peakBoost = if (abs(distToPeak) < 2.5f) {
-            val needed = (peakHr - (baseEnvelope + walkDipMod)).coerceAtLeast(4f)
-            needed * exp(-(distToPeak * distToPeak) * 0.9f)
-        } else 0f
-
-        // Micro-variação orgânica não-periódica (random walk suave, sem seno/cosseno)
-        organicWalk = (organicWalk * 0.55f + (random.nextFloat() - 0.495f) * 2.9f).coerceIn(-3.2f, 3.2f)
-
-        val rawTarget = baseEnvelope + walkDipMod + peakBoost + organicWalk
-        val alpha = if (rawTarget > current) 0.52f else 0.42f
-        current += (rawTarget - current) * alpha
-        samples[i] = current.coerceIn(startHr - 2f, peakHr.toFloat())
-    }
-
-    samples[0] = startHr
-    if (targetPoints > 2) {
-        samples[1] = (startHr + 4f).coerceAtMost(104f)
-    }
-
-    // Garante que o pico máximo exato (maxHr) seja atingido no ponto de maior esforço
-    val peakIdx = (peakFrac * (targetPoints - 1)).roundToInt().coerceIn(targetPoints / 3, targetPoints - 6)
-    samples[peakIdx] = peakHr.toFloat()
-    if (peakIdx - 1 >= 0) samples[peakIdx - 1] = (peakHr - 2).toFloat()
-    if (peakIdx + 1 < targetPoints) samples[peakIdx + 1] = (peakHr - 3).toFloat()
-
-    return samples.map { it.roundToInt().coerceIn(85, peakHr) }
+    return recordedSamples.filter { it in 45..240 }
 }
 
 /**
@@ -596,19 +440,13 @@ fun FullscreenSessionHeartRateModal(
     isLightMode: Boolean = false,
     onDismiss: () -> Unit
 ) {
-    val combinedSamples = remember(hrSamples, dossier.telemetrySamples) {
+    val effectiveSamples = remember(hrSamples, dossier.telemetrySamples) {
         val raw = hrSamples.filter { it in 45..240 }
-        if (raw.size >= 8) raw else dossier.telemetrySamples.map { it.heartRateBpm }.filter { it in 45..240 }
-    }
-    val effectiveSamples = remember(combinedSamples, dossier.avgHeartRateBpm, dossier.maxHeartRateBpm, dossier.durationSeconds, splits) {
-        generateRealisticHrSamples(
-            sessionId = dossier.formattedDateTime,
-            avgHr = dossier.avgHeartRateBpm,
-            maxHr = dossier.maxHeartRateBpm,
-            durationSec = dossier.durationSeconds,
-            recordedSamples = combinedSamples,
-            splits = splits
-        )
+        if (raw.size >= 2) {
+            raw
+        } else {
+            dossier.telemetrySamples.map { it.heartRateBpm }.filter { it in 45..240 }
+        }
     }
     val calibratedMaxHr = remember(athleteAge, dossier.maxHeartRateBpm, dossier.effectiveMaxHeartRateBpm) {
         val baseCal = maxOf(
@@ -834,7 +672,7 @@ fun FullscreenHeartRateAnalysisDialog(
                                         maxLines = 1
                                     )
                                     Text(
-                                        text = "$avgHr bpm",
+                                        text = if (avgHr > 0) "$avgHr bpm" else "-- bpm",
                                         color = Color(0xFF00E5FF),
                                         fontSize = 20.sp,
                                         fontWeight = FontWeight.Black,
@@ -864,7 +702,7 @@ fun FullscreenHeartRateAnalysisDialog(
                                         maxLines = 1
                                     )
                                     Text(
-                                        text = "$maxHr bpm",
+                                        text = if (maxHr > 0) "$maxHr bpm" else "-- bpm",
                                         color = Color(0xFFFFD600),
                                         fontSize = 20.sp,
                                         fontWeight = FontWeight.Black,
@@ -918,7 +756,7 @@ fun FullscreenHeartRateAnalysisDialog(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = "-$recoveryDropBpm bpm",
+                                    text = if (effectiveSamples.size >= 2) "-$recoveryDropBpm bpm" else "--",
                                     color = Color(0xFF00E676),
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Black
@@ -940,192 +778,209 @@ fun FullscreenHeartRateAnalysisDialog(
                                 .padding(horizontal = 14.dp, vertical = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            val activeIdx = scrubbedIndex?.coerceIn(0, (effectiveSamples.size - 1).coerceAtLeast(0))
-                            if (activeIdx != null && effectiveSamples.isNotEmpty()) {
-                                val fraction = activeIdx.toFloat() / (effectiveSamples.size - 1).coerceAtLeast(1)
-                                val activeBpm = effectiveSamples[activeIdx]
-                                val activeZone = getHrZoneForBpm(activeBpm)
-                                val (badgeBg, badgeFg) = getZoneBadgeColors(activeZone, isLightMode)
-                                val activeTimeSec = (fraction * durationSec.coerceAtLeast(1)).roundToInt()
-                                val mm = activeTimeSec / 60
-                                val ss = activeTimeSec % 60
-                                val timeFormatted = String.format(Locale.US, "%02d:%02d", mm, ss)
-                                val (phaseBlockLabel, instantPaceLabel) = remember(
-                                    activeIdx,
-                                    activeBpm,
-                                    avgHr,
-                                    avgPaceSecPerKm,
-                                    routePointItems,
-                                    splits
-                                ) {
-                                    resolvePhaseAndPaceAtFraction(
-                                        fraction = fraction,
-                                        bpmAtPoint = activeBpm,
-                                        avgHr = avgHr,
-                                        avgPaceSecPerKm = avgPaceSecPerKm,
-                                        routePointItems = routePointItems,
-                                        splits = splits
-                                    )
-                                }
-
-                                Surface(
-                                    color = if (isLightMode) Color(0xFFF1F5F9) else Color(0xFF0D0F14),
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = BorderStroke(1.dp, activeZone.color.copy(alpha = 0.65f)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(10.dp)
-                                                        .background(activeZone.color, CircleShape)
-                                                )
-                                                Text(
-                                                    text = "Minuto $timeFormatted • $activeBpm bpm",
-                                                    color = primaryText,
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.Black
-                                                )
-                                            }
-                                            Surface(
-                                                color = badgeBg,
-                                                shape = RoundedCornerShape(6.dp)
-                                            ) {
-                                                Text(
-                                                    text = activeZone.name,
-                                                    color = badgeFg,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    maxLines = 1,
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                                )
-                                            }
-                                        }
-
-                                        Text(
-                                            text = "Bloco: $phaseBlockLabel • Pace: $instantPaceLabel",
-                                            color = secondaryText,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                            }
-
-                            val yAxisReservedWidth = 30.dp
-                            val yAxisSpacerWidth = 8.dp
-                            val totalRightAxisPadding = yAxisReservedWidth + yAxisSpacerWidth
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(260.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            if (effectiveSamples.size < 2) {
                                 Box(
                                     modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxHeight()
-                                        .onSizeChanged { size ->
-                                            plotWidthPx = size.width.toFloat().coerceAtLeast(1f)
-                                        }
-                                        .pointerInput(effectiveSamples) {
-                                            detectTapGestures { offset ->
-                                                if (effectiveSamples.isNotEmpty()) {
-                                                    val ratio = (offset.x / plotWidthPx).coerceIn(0f, 1f)
-                                                    scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
+                                        .fillMaxWidth()
+                                        .height(140.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Sem dados de FC",
+                                        color = secondaryText,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            } else {
+                                val activeIdx = scrubbedIndex?.coerceIn(0, (effectiveSamples.size - 1).coerceAtLeast(0))
+                                if (activeIdx != null) {
+                                    val fraction = activeIdx.toFloat() / (effectiveSamples.size - 1).coerceAtLeast(1)
+                                    val activeBpm = effectiveSamples[activeIdx]
+                                    val activeZone = getHrZoneForBpm(activeBpm)
+                                    val (badgeBg, badgeFg) = getZoneBadgeColors(activeZone, isLightMode)
+                                    val activeTimeSec = (fraction * durationSec.coerceAtLeast(1)).roundToInt()
+                                    val mm = activeTimeSec / 60
+                                    val ss = activeTimeSec % 60
+                                    val timeFormatted = String.format(Locale.US, "%02d:%02d", mm, ss)
+                                    val (phaseBlockLabel, instantPaceLabel) = remember(
+                                        activeIdx,
+                                        activeBpm,
+                                        avgHr,
+                                        avgPaceSecPerKm,
+                                        routePointItems,
+                                        splits
+                                    ) {
+                                        resolvePhaseAndPaceAtFraction(
+                                            fraction = fraction,
+                                            bpmAtPoint = activeBpm,
+                                            avgHr = avgHr,
+                                            avgPaceSecPerKm = avgPaceSecPerKm,
+                                            routePointItems = routePointItems,
+                                            splits = splits
+                                        )
+                                    }
+
+                                    Surface(
+                                        color = if (isLightMode) Color(0xFFF1F5F9) else Color(0xFF0D0F14),
+                                        shape = RoundedCornerShape(12.dp),
+                                        border = BorderStroke(1.dp, activeZone.color.copy(alpha = 0.65f)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(10.dp)
+                                                            .background(activeZone.color, CircleShape)
+                                                    )
+                                                    Text(
+                                                        text = "Minuto $timeFormatted • $activeBpm bpm",
+                                                        color = primaryText,
+                                                        fontSize = 14.sp,
+                                                        fontWeight = FontWeight.Black
+                                                    )
+                                                }
+                                                Surface(
+                                                    color = badgeBg,
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = activeZone.name,
+                                                        color = badgeFg,
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 1,
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                    )
                                                 }
                                             }
+
+                                            Text(
+                                                text = "Bloco: $phaseBlockLabel • Pace: $instantPaceLabel",
+                                                color = secondaryText,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                         }
-                                        .pointerInput(effectiveSamples) {
-                                            detectHorizontalDragGestures(
-                                                onDragStart = { offset ->
+                                    }
+                                }
+
+                                val yAxisReservedWidth = 30.dp
+                                val yAxisSpacerWidth = 8.dp
+                                val totalRightAxisPadding = yAxisReservedWidth + yAxisSpacerWidth
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(260.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                            .onSizeChanged { size ->
+                                                plotWidthPx = size.width.toFloat().coerceAtLeast(1f)
+                                            }
+                                            .pointerInput(effectiveSamples) {
+                                                detectTapGestures { offset ->
                                                     if (effectiveSamples.isNotEmpty()) {
                                                         val ratio = (offset.x / plotWidthPx).coerceIn(0f, 1f)
                                                         scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
                                                     }
-                                                },
-                                                onHorizontalDrag = { change, _ ->
-                                                    change.consume()
-                                                    if (effectiveSamples.isNotEmpty()) {
-                                                        val ratio = (change.position.x / plotWidthPx).coerceIn(0f, 1f)
-                                                        scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
-                                                    }
                                                 }
-                                            )
-                                        }
-                                ) {
-                                    HaylouHeartRateCanvas(
-                                        samples = effectiveSamples,
-                                        isLightMode = isLightMode,
-                                        activeIdx = activeIdx,
-                                        strokeWidthDp = 2.8f
-                                    )
+                                            }
+                                            .pointerInput(effectiveSamples) {
+                                                detectHorizontalDragGestures(
+                                                    onDragStart = { offset ->
+                                                        if (effectiveSamples.isNotEmpty()) {
+                                                            val ratio = (offset.x / plotWidthPx).coerceIn(0f, 1f)
+                                                            scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
+                                                        }
+                                                    },
+                                                    onHorizontalDrag = { change, _ ->
+                                                        change.consume()
+                                                        if (effectiveSamples.isNotEmpty()) {
+                                                            val ratio = (change.position.x / plotWidthPx).coerceIn(0f, 1f)
+                                                            scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                    ) {
+                                        HaylouHeartRateCanvas(
+                                            samples = effectiveSamples,
+                                            isLightMode = isLightMode,
+                                            activeIdx = activeIdx,
+                                            strokeWidthDp = 2.8f
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(yAxisSpacerWidth))
+
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxHeight()
+                                            .width(yAxisReservedWidth),
+                                        verticalArrangement = Arrangement.SpaceBetween,
+                                        horizontalAlignment = Alignment.End
+                                    ) {
+                                        Text("180", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        Text("155", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        Text("130", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        Text("105", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                        Text("80", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                    }
                                 }
 
-                                Spacer(modifier = Modifier.width(yAxisSpacerWidth))
-
-                                Column(
+                                Row(
                                     modifier = Modifier
-                                        .fillMaxHeight()
-                                        .width(yAxisReservedWidth),
-                                    verticalArrangement = Arrangement.SpaceBetween,
-                                    horizontalAlignment = Alignment.End
+                                        .fillMaxWidth()
+                                        .padding(end = totalRightAxisPadding),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("180", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                                    Text("155", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                                    Text("130", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                                    Text("105", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                                    Text("80", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                    xAxisTicks.forEachIndexed { idx, tick ->
+                                        Text(
+                                            text = tick,
+                                            color = secondaryText,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            textAlign = when (idx) {
+                                                0 -> TextAlign.Start
+                                                xAxisTicks.lastIndex -> TextAlign.End
+                                                else -> TextAlign.Center
+                                            }
+                                        )
+                                    }
                                 }
-                            }
 
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(end = totalRightAxisPadding),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                xAxisTicks.forEachIndexed { idx, tick ->
-                                    Text(
-                                        text = tick,
-                                        color = secondaryText,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        textAlign = when (idx) {
-                                            0 -> TextAlign.Start
-                                            xAxisTicks.lastIndex -> TextAlign.End
-                                            else -> TextAlign.Center
-                                        }
-                                    )
-                                }
+                                Text(
+                                    text = "Deslize o dedo sobre o gráfico para inspecionar batimentos, bloco e pace segundo a segundo.",
+                                    color = secondaryText,
+                                    fontSize = 11.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
                             }
-
-                            Text(
-                                text = "Deslize o dedo sobre o gráfico para inspecionar batimentos, bloco e pace segundo a segundo.",
-                                color = secondaryText,
-                                fontSize = 11.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.fillMaxWidth()
-                            )
                         }
                     }
 

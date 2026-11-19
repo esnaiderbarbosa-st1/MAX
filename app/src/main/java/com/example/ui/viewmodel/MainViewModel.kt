@@ -87,14 +87,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val json = sharedPrefs.getString("running_shoes_json", "[]") ?: "[]"
                 val type = com.squareup.moshi.Types.newParameterizedType(List::class.java, com.example.data.model.RunningShoe::class.java)
                 val adapter = com.example.utils.JsonUtils.moshi.adapter<List<com.example.data.model.RunningShoe>>(type)
-                val loaded = adapter.fromJson(json)
-                if (loaded.isNullOrEmpty()) defaultList else loaded
+                adapter.fromJson(json) ?: emptyList()
             }
         } catch (e: Exception) {
             com.example.utils.CrashLog.record(e, "MainViewModel.loadPersistedRunningShoes")
-            listOf(
-                com.example.data.model.RunningShoe(id = "shoe_corre_4", name = "Corre 4", brand = "Olympikus", initialDistanceKm = 0f, totalDistanceKm = 0f, maxDistanceKm = 600f, isDefault = true)
-            )
+            emptyList()
         }
     }
 
@@ -3907,114 +3904,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- BIOIMPEDANCE FILE OCR SIMULATION ---
-    fun runBioimpedanceOcrSimulation(textInput: String? = null) {
-        viewModelScope.launch {
-            isAiLoading.value = true
-            delay(1500) // realistic scan animation delay
-            
-            val sampleReport = textInput ?: """
-                RELATÓRIO DE BIOIMPEDÂNCIA CLÍNICA
-                -----------------------------------
-                Peso Corporal: 81.4 kg
-                Massa Magra de Esqueleto: 64.8 kg
-                Percentual de Gordura Corporal (BF): 13.6%
-                Água Corporal Total: 59.2 litros
-                Nível de Gordura Visceral: 4
-            """.trimIndent()
-
-            val parsed = BioimpedanceParser.parseBioimpedanceText(sampleReport)
-            
-            // Update active user profile biometric fields
-            val updated = userProfile.value.copy(
-                peso = parsed.peso,
-                massaMagra = parsed.massaMagra,
-                percentualGordura = parsed.percentualGordura
-            )
-            repository.saveProfile(updated)
-            
-            isAiLoading.value = false
-            AudioSynth.playChimeSound()
-        }
-    }
-
-    private fun generateLocalOcrResponse(base64Image: String): com.example.services.supabase.SupabaseService.SupabaseResponse {
-        val profile = userProfile.value
-        val seed = base64Image.hashCode().toLong()
-        val random = java.util.Random(seed)
-        
-        // Match Esnaider's exact bioimpedance report with slight variations to prove a new image was processed!
-        val isEsnaider = profile.nome.contains("Esnaider", ignoreCase = true) || 
-                         profile.nome.contains("Ferreira", ignoreCase = true) || 
-                         profile.nome == "Usuário Teste"
-        if (isEsnaider) {
-            val wtPerturbation = (random.nextFloat() * 1.6f) - 0.8f // -0.8 to +0.8 kg variation
-            val bfPerturbation = (random.nextFloat() * 1.2f) - 0.6f // -0.6% to +0.6% variation
-            return com.example.services.supabase.SupabaseService.SupabaseResponse(
-                reading_date = "2026-05-28 06:30",
-                weight_kg = 92.4f + wtPerturbation,
-                body_fat_pct = 25.6f + bfPerturbation,
-                muscle_rate_pct = 70.5f,
-                imc = 26.7f,
-                fat_free_mass_kg = 68.7f,
-                subcutaneous_fat_pct = 18.3f,
-                visceral_fat = 12.0f,
-                body_water_pct = 51.6f,
-                skeletal_muscle_mass_kg = 40.2f,
-                muscle_mass_kg = 65.1f,
-                bone_mass_kg = 3.5f,
-                protein_pct = 19.0f,
-                bmr_kcal = 1854,
-                metabolic_age = 51,
-                _warnings = emptyList(),
-                _partialData = false
-            )
-        }
-        
-        val pesoDelta = (random.nextFloat() * 2.0f) - 1.0f // -1.0 to +1.0 kg variation
-        val simulatedPeso = (profile.peso + pesoDelta).coerceAtLeast(40f)
-        
-        val heightM = profile.altura / 100.0f
-        val simulatedImc = if (heightM > 0) simulatedPeso / (heightM * heightM) else 22f
-        
-        val bfDelta = (random.nextFloat() * 1.6f) - 0.8f // -0.8% to +0.8% variation
-        val simulatedBf = (profile.percentualGordura + bfDelta).coerceIn(5f, 50f)
-        
-        val taxaMuscular = (50f + (random.nextFloat() * 4f - 2f)).coerceIn(30f, 70f)
-        val massaMagra = simulatedPeso * (1f - (simulatedBf / 100f))
-        val gorduraSubcutanea = (simulatedBf * 0.75f + (random.nextFloat() * 2f - 1f)).coerceIn(5f, 35f)
-        val gorduraVisceral = (profile.percentualGordura / 3f + (random.nextFloat() * 2f - 1f)).coerceIn(1f, 20f)
-        val aguaCorporal = (60f - simulatedBf * 0.4f + (random.nextFloat() * 2f - 1f)).coerceIn(40f, 75f)
-        val massaMuscularEsqueletica = (massaMagra * 0.55f + (random.nextFloat() * 2f - 1f)).coerceIn(15f, 60f)
-        val massaMuscular = (massaMagra * 0.82f + (random.nextFloat() * 2f - 1f)).coerceIn(20f, 80f)
-        val massaOssea = (3.0f + (random.nextFloat() * 0.6f - 0.3f)).coerceIn(1.5f, 5.0f)
-        val proteina = (18f + (random.nextFloat() * 2f - 1.0f)).coerceIn(10f, 25f)
-        val tmb = (1600 + (simulatedPeso * 10).toInt() + (random.nextInt(150) - 75)).coerceAtLeast(1000)
-        val idadeMetabolica = (profile.idade + random.nextInt(3) - 1).coerceAtLeast(12)
-        
-        val todayStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
-        
-        return com.example.services.supabase.SupabaseService.SupabaseResponse(
-            reading_date = todayStr,
-            weight_kg = simulatedPeso,
-            body_fat_pct = simulatedBf,
-            muscle_rate_pct = taxaMuscular,
-            imc = simulatedImc,
-            fat_free_mass_kg = massaMagra,
-            subcutaneous_fat_pct = gorduraSubcutanea,
-            visceral_fat = gorduraVisceral,
-            body_water_pct = aguaCorporal,
-            skeletal_muscle_mass_kg = massaMuscularEsqueletica,
-            muscle_mass_kg = massaMuscular,
-            bone_mass_kg = massaOssea,
-            protein_pct = proteina,
-            bmr_kcal = tmb,
-            metabolic_age = idadeMetabolica,
-            _warnings = listOf("Chave de API inválida. Usando OCR local..."),
-            _partialData = false
-        )
-    }
-
     private fun parseGeminiExtractJson(jsonStr: String): com.example.services.supabase.SupabaseService.SupabaseResponse {
         try {
             val obj = org.json.JSONObject(jsonStr)
@@ -4120,44 +4009,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- REAL AND FALLBACK SCANNERS ---
+    // --- REAL BIOIMPEDANCE SCANNER (SEM FABRICAÇÃO DE DADOS EM FALHA) ---
     fun scanBioimpedance(base64Image: String, onResult: (BioimpedanceRecord) -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
             isAiLoading.value = true
             bioimpedanceScanWarning.value = null
             try {
                 val apiKey = com.example.BuildConfig.GEMINI_API_KEY_1
-                val isKeyInvalid = apiKey.isEmpty() || apiKey.contains("MY_GEMINI") || apiKey.contains("placeholder")
-                
-                val res = if (isKeyInvalid) {
-                    android.util.Log.w("MAX_PERFORMANCE_DEBUG", "Gemini API key is invalid or placeholder. Using local OCR fallback.")
-                    bioimpedanceScanWarning.value = "Chave de API inválida. Usando OCR local..."
-                    generateLocalOcrResponse(base64Image)
-                } else {
+                val isKeyInvalid = apiKey.isBlank() || apiKey.contains("MY_GEMINI") || apiKey.contains("placeholder")
+
+                if (isKeyInvalid) {
+                    val msg = "Chave da API Gemini não configurada ou inválida. Não foi possível ler a bioimpedância."
+                    android.util.Log.w("MAX_PERFORMANCE_DEBUG", msg)
+                    bioimpedanceScanWarning.value = msg
+                    onError(msg)
+                    return@launch
+                }
+
+                val res = try {
                     try {
-                        try {
-                            val rawJson = com.example.services.ai.GeminiService.extractBioimpedanceFromImage(
-                                base64Image = base64Image,
-                                profileWeight = userProfile.value.peso,
-                                profileBf = userProfile.value.percentualGordura,
-                                profileHeight = userProfile.value.altura,
-                                profileAge = userProfile.value.idade
-                            )
-                            parseGeminiExtractJson(rawJson)
-                        } catch (directEx: Exception) {
-                            android.util.Log.w("MAX_PERFORMANCE_DEBUG", "Direct Gemini extraction failed. Trying Supabase...", directEx)
-                            com.example.services.supabase.SupabaseService.analyzeBioimpedance(base64Image)
-                        }
-                    } catch (e: Exception) {
-                        val errMsg = e.message ?: ""
-                        if (errMsg.contains("401") || errMsg.contains("Unauthorized") || errMsg.contains("Invalid API key") || errMsg.contains("Invalid key")) {
-                            android.util.Log.e("MAX_PERFORMANCE_DEBUG", "Gemini/Supabase API error. Falling back to local OCR.", e)
-                            bioimpedanceScanWarning.value = "Chave de API inválida ou expirada. Usando OCR local..."
-                            generateLocalOcrResponse(base64Image)
-                        } else {
-                            throw e
-                        }
+                        val rawJson = com.example.services.ai.GeminiService.extractBioimpedanceFromImage(
+                            base64Image = base64Image,
+                            profileWeight = userProfile.value.peso,
+                            profileBf = userProfile.value.percentualGordura,
+                            profileHeight = userProfile.value.altura,
+                            profileAge = userProfile.value.idade
+                        )
+                        parseGeminiExtractJson(rawJson)
+                    } catch (directEx: Exception) {
+                        android.util.Log.w("MAX_PERFORMANCE_DEBUG", "Direct Gemini extraction failed. Trying Supabase...", directEx)
+                        com.example.services.supabase.SupabaseService.analyzeBioimpedance(base64Image)
                     }
+                } catch (e: Exception) {
+                    val errMsg = e.message ?: ""
+                    if (errMsg.contains("401") || errMsg.contains("Unauthorized") || errMsg.contains("Invalid API key") || errMsg.contains("Invalid key")) {
+                        val msg = "Chave da API inválida ou expirada (401). Não foi possível processar o exame."
+                        android.util.Log.e("MAX_PERFORMANCE_DEBUG", msg, e)
+                        bioimpedanceScanWarning.value = msg
+                        onError(msg)
+                        return@launch
+                    } else {
+                        throw e
+                    }
+                }
+
+                val hasAnyRealReading = (res.weight_kg ?: 0f) > 0f ||
+                    (res.body_fat_pct ?: 0f) > 0f ||
+                    (res.imc ?: 0f) > 0f ||
+                    (res.fat_free_mass_kg ?: 0f) > 0f
+                if (!hasAnyRealReading) {
+                    val msg = "Não foi possível extrair os dados do exame de bioimpedância."
+                    bioimpedanceScanWarning.value = msg
+                    onError(msg)
+                    return@launch
                 }
                 
                 // Construct BioimpedanceRecord

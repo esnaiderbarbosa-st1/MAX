@@ -974,7 +974,8 @@ fun RunningSummaryDialog(
     plan: RunningWorkoutPlan? = null,
     skippedIndices: Set<Int> = emptySet(),
     availableShoes: List<com.example.data.model.RunningShoe> = emptyList(),
-    userWeightKg: Float = 70f,
+    userWeightKg: Float? = null,
+    userProfile: com.example.data.model.UserProfileData? = null,
     mainRunDurationSec: Int = 0,
     mainRunDistanceMeters: Int = 0,
     avgHr: Int? = null,
@@ -1475,10 +1476,13 @@ fun RunningSummaryDialog(
                             isContinuousRunMode = true
                         )
                     }
+                    val effectiveSummaryProfile = userProfile ?: userWeightKg?.takeIf { it > 0f }?.let {
+                        com.example.data.model.UserProfileData(peso = it, weightKg = it)
+                    }
                     val doss = runCatching {
                         com.example.data.model.buildRunPhysiologyDossier(
                             session = sess,
-                            userProfile = null,
+                            userProfile = effectiveSummaryProfile,
                             gpsPoints = emptyList()
                         )
                     }.getOrElse {
@@ -1486,6 +1490,12 @@ fun RunningSummaryDialog(
                         val safeDistKm = (sess.distanceMeters.coerceAtLeast(0)) / 1000f
                         val safePace = sess.avgPaceSecPerKm.coerceAtLeast(0)
                         val formattedPace = com.example.data.model.formatPaceMinSecQuote(safePace)
+                        val computedActiveKcal = com.example.data.model.calculateRunActiveCaloriesKcal(
+                            distanceMeters = sess.distanceMeters,
+                            userProfile = effectiveSummaryProfile,
+                            weightKgOverride = userWeightKg
+                        )
+                        val missingWeight = computedActiveKcal == null && sess.distanceMeters > 0
                         com.example.data.model.RunPhysiologyDossier(
                             badgeTitle = "SESSÃO DE CORRIDA",
                             athleteName = "Atleta",
@@ -1496,9 +1506,10 @@ fun RunningSummaryDialog(
                             durationSeconds = safeDur,
                             totalDurationWithWarmupSeconds = safeDur,
                             formattedDurationHhMmSs = com.example.data.model.formatSecondsToHhMmSs(safeDur),
-                            activeCaloriesKcal = (safeDistKm * 70f).toInt().coerceAtLeast(0),
-                            basalCaloriesKcal = 15,
-                            totalCaloriesKcal = (safeDistKm * 70f).toInt().coerceAtLeast(0) + 15,
+                            activeCaloriesKcal = computedActiveKcal ?: 0,
+                            basalCaloriesKcal = 0,
+                            totalCaloriesKcal = computedActiveKcal ?: 0,
+                            isWeightMissingForCalories = missingWeight,
                             avgPaceSecPerKm = safePace,
                             maxPaceSecPerKm = safePace,
                             formattedAvgPace = formattedPace,
@@ -1609,7 +1620,7 @@ fun RunningSummaryDialog(
                             totalElapsedSec = durationSec.coerceAtLeast(1),
                             totalMeasuredDistanceMeters = safeDistDouble,
                             splitIntervalKm = selectedSplitInterval,
-                            userWeightKg = userWeightKg
+                            userWeightKg = userWeightKg ?: 0f
                         )
                     }.getOrElse {
                         com.example.services.WorkoutMetricsResult(
@@ -3883,27 +3894,29 @@ fun FullscreenHeartRateModal(
                                         )
                                     }
 
-                                    OutlinedButton(
-                                        onClick = {
-                                            AudioSynth.playTickSound()
-                                            bleManager.startSimulation()
-                                        },
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(44.dp),
-                                        shape = RoundedCornerShape(12.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp),
-                                        border = BorderStroke(1.dp, Color(0xFF00E676).copy(alpha = 0.5f))
-                                    ) {
-                                        Text(
-                                            text = "SIMULAR SINAL",
-                                            color = Color(0xFF00E676),
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Black,
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                    if (com.example.BuildConfig.DEBUG) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                AudioSynth.playTickSound()
+                                                bleManager.startSimulation()
+                                            },
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(44.dp),
+                                            shape = RoundedCornerShape(12.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp),
+                                            border = BorderStroke(1.dp, Color(0xFF00E676).copy(alpha = 0.5f))
+                                        ) {
+                                            Text(
+                                                text = "SIMULAR SINAL",
+                                                color = Color(0xFF00E676),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Black,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
                                 }
                             }

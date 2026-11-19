@@ -3463,7 +3463,8 @@ fun RunningModuleScreen(viewModel: MainViewModel) {
             plan = activePlan,
             skippedIndices = completedSkippedIndices,
             availableShoes = runningShoes,
-            userWeightKg = resolveWeightKg(userProfile),
+            userWeightKg = com.example.data.model.resolveValidWeightKgOrNull(userProfile),
+            userProfile = userProfile,
             mainRunDurationSec = completedMainRunDurationSec,
             mainRunDistanceMeters = completedMainRunDistanceMeters,
             avgHr = summaryAvgHr,
@@ -3995,18 +3996,20 @@ fun RunningModuleScreen(viewModel: MainViewModel) {
 
                 Spacer(modifier = Modifier.height(24.dp))
                 
-                TextButton(
-                    onClick = { 
-                        bleManager.startSimulation() 
-                        showHrPairingSheet = false
+                if (com.example.BuildConfig.DEBUG) {
+                    TextButton(
+                        onClick = { 
+                            bleManager.startSimulation() 
+                            showHrPairingSheet = false
+                        }
+                    ) {
+                        Text(
+                            "Simular XOSS X2 PRO (Modo Teste)",
+                            color = RunColors.textSecondary,
+                            fontSize = 12.sp,
+                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
+                        )
                     }
-                ) {
-                    Text(
-                        "Simular XOSS X2 PRO (Modo Teste)",
-                        color = RunColors.textSecondary,
-                        fontSize = 12.sp,
-                        textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline
-                    )
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))

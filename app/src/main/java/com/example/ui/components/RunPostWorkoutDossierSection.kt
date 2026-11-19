@@ -354,14 +354,14 @@ fun RunDossierMasterHeaderAnd2x3Grid(
                         modifier = Modifier.weight(1f)
                     )
                     DossierGridMetricCell(
-                        value = "${dossier.activeCaloriesKcal} kcal",
+                        value = if (dossier.isWeightMissingForCalories) "Peso não informado" else "${dossier.activeCaloriesKcal} kcal",
                         label = "Calorias",
                         valueColor = DossierGreen,
                         labelColor = secondaryText,
                         modifier = Modifier.weight(1f)
                     )
                     DossierGridMetricCell(
-                        value = "${dossier.totalCaloriesKcal} kcal",
+                        value = if (dossier.isWeightMissingForCalories) "Peso não informado" else "${dossier.totalCaloriesKcal} kcal",
                         label = "Total kcal",
                         valueColor = accentCyan,
                         labelColor = secondaryText,

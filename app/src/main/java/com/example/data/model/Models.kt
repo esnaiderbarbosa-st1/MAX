@@ -85,15 +85,22 @@ data class UserProfileData(
 }
 
 /**
- * Retorna weightKg se válido (> 0), senão peso convertido se válido (> 0), senão 70f por padrão.
+ * Retorna o peso corporal válido (> 0f) do perfil ou null quando não informado (sem fallback silencioso de 70 kg).
  */
-fun resolveWeightKg(profile: UserProfileData?): Float {
-    if (profile == null) return 70f
+fun resolveValidWeightKgOrNull(profile: UserProfileData?): Float? {
+    if (profile == null) return null
     val wk = profile.weightKg
     if (wk != null && wk > 0f) return wk
     val p = profile.peso
     if (p > 0f) return p
-    return 70f
+    return null
+}
+
+/**
+ * Retorna weightKg se válido (> 0), senão peso convertido se válido (> 0), senão 70f por padrão.
+ */
+fun resolveWeightKg(profile: UserProfileData?): Float {
+    return resolveValidWeightKgOrNull(profile) ?: 70f
 }
 
 // BioimpedanceRecord is now defined in BodyRecompModels.kt (same package com.example.data.model)

@@ -21,6 +21,7 @@ import com.example.data.model.buildSplitsForMode
 import com.example.data.model.calculateSprintAnalytics
 import com.example.data.model.isSimulatedOrTestSession
 import com.example.data.model.resolveSessionRoutePointsWithPhases
+import com.example.data.model.toHrTimelineList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -483,18 +484,17 @@ object SessionReportBitmapGenerator {
             String.format(Locale.US, "%d'%02d\"/km", effectivePaceSec / 60, effectivePaceSec % 60)
         } else "--:--"
 
-        val userWeight = userProfile?.peso ?: 70f
-        val calories = ((session.distanceMeters / 1000.0) * userWeight * 1.03).toInt()
-            .coerceAtLeast((session.durationSec / 60) * 5)
-
-        val ahrStr = "${dossier.avgHeartRateBpm} bpm"
-        val maxHrStr = "${dossier.maxHeartRateBpm} bpm"
+        val caloriesDisplayPair = if (dossier.isWeightMissingForCalories) {
+            Pair("Peso não informado", "Calorias")
+        } else {
+            Pair("${dossier.totalCaloriesKcal} kcal", "Total Kcal (${dossier.activeCaloriesKcal} ativas)")
+        }
 
         val gridData = listOf(
             listOf(
                 Pair(dossier.formattedDurationHhMmSs, "Tempo (HH:MM:SS)"),
                 Pair("${dossier.formattedAvgPace}/km", "Média de Ritmo"),
-                Pair("${dossier.totalCaloriesKcal} kcal", "Total Kcal (${dossier.activeCaloriesKcal} ativas)")
+                caloriesDisplayPair
             ),
             listOf(
                 Pair(sprintAnalytics.avgSprintPaceText, sprintAnalytics.primaryPaceLabel),
@@ -563,6 +563,9 @@ object SessionReportBitmapGenerator {
         val centerAhrX = marginX + (contentWidth / 4f)
         val centerMaxX = marginX + (contentWidth * 3f / 4f)
         val hrHeaderY = currentY + 110f
+
+        val ahrStr = if (dossier.avgHeartRateBpm > 0) "${dossier.avgHeartRateBpm}" else "--"
+        val maxHrStr = if (dossier.maxHeartRateBpm > 0) "${dossier.maxHeartRateBpm}" else "--"
 
         paint.color = primaryTextColor
         paint.textSize = 38f
@@ -645,20 +648,21 @@ object SessionReportBitmapGenerator {
         val graphPlotLeft = graphRect.left + 16f
         val graphPlotWidth = graphPlotRight - graphPlotLeft
 
-        val reportHrSamples: List<Int> = dossier.telemetrySamples.map { it.heartRateBpm }.ifEmpty {
-            val validHrSamples = if (!session.hrTimeline.isNullOrBlank()) {
-                session.hrTimeline.split(",").mapNotNull { it.trim().toIntOrNull() }.filter { it > 40 }
-            } else emptyList()
-            com.example.ui.components.generateRealisticHrSamples(
-                sessionId = session.id,
-                avgHr = session.avgHr,
-                maxHr = session.maxHr,
-                durationSec = dossier.durationSeconds,
-                recordedSamples = validHrSamples
-            )
-        }
+        val reportHrSamples: List<Int> = dossier.telemetrySamples
+            .map { it.heartRateBpm }
+            .filter { it in 45..240 }
+            .ifEmpty {
+                session.hrTimeline.toHrTimelineList().filter { it in 45..240 }
+            }
 
-        if (reportHrSamples.size >= 2) {
+        if (reportHrSamples.size < 2) {
+            paint.textSize = 24f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            paint.color = if (isLightReport) 0xFF64748B.toInt() else 0xFF94A3B8.toInt()
+            paint.textAlign = Paint.Align.CENTER
+            canvas.drawText("Sem dados de FC", graphRect.centerX(), graphRect.centerY() + 8f, paint)
+            paint.textAlign = Paint.Align.LEFT
+        } else {
             val stepX = graphPlotWidth / (reportHrSamples.size - 1).coerceAtLeast(1)
             val curvePath = android.graphics.Path()
 
