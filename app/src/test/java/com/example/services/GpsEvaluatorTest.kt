@@ -153,7 +153,7 @@ class GpsEvaluatorTest {
         val jumpNanos = baseNanos + 1_000_000_000L
         val jumpPoint = GpsPoint(jumpLat, jumpLon, 5f, jumpNanos, 3f)
 
-        val result = GpsEvaluator.evaluatePoint(anchor, jumpPoint, jumpNanos, false)
+        val result = GpsEvaluator.evaluatePoint(anchor, jumpPoint, jumpNanos, false, recordedPointsCount = 5)
         assertTrue("Salto de 500m em 1s deve ser rejeitado", result is EvaluationResult.Rejected)
         assertEquals("UNREALISTIC_SPEED", (result as EvaluationResult.Rejected).reason)
     }

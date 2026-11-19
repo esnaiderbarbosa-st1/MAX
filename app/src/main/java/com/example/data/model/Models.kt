@@ -70,6 +70,7 @@ data class UserProfileData(
             sexo = "Feminino",
             idade = 42,
             altura = 155,
+            heightCm = 155,
             peso = 72.0f,
             nivelExperiencia = "Avançado",
             localTreino = "Academia",
@@ -101,6 +102,28 @@ fun resolveValidWeightKgOrNull(profile: UserProfileData?): Float? {
  */
 fun resolveWeightKg(profile: UserProfileData?): Float {
     return resolveValidWeightKgOrNull(profile) ?: 70f
+}
+
+/**
+ * Retorna a altura válida (entre 100 e 230 cm) do perfil (`heightCm`, com `altura` como alternativa),
+ * ou null quando não houver altura válida.
+ */
+fun resolveValidHeightCmOrNull(profile: UserProfileData?): Int? {
+    if (profile == null) return null
+    val h = profile.heightCm?.takeIf { it in 100..230 }
+    if (h != null) return h
+    return profile.altura.takeIf { it in 100..230 }
+}
+
+/**
+ * Calcula o IMC automático a partir do peso (> 30 kg) e altura válida (entre 100 e 230 cm).
+ * Retorna null quando não houver peso ou altura válidos.
+ */
+fun calculateAutoBmiOrNull(weightKg: Float?, heightCm: Int?): Float? {
+    if (weightKg == null || weightKg <= 30f) return null
+    val validHeightCm = heightCm?.takeIf { it in 100..230 } ?: return null
+    val hm = validHeightCm / 100f
+    return weightKg / (hm * hm)
 }
 
 // BioimpedanceRecord is now defined in BodyRecompModels.kt (same package com.example.data.model)

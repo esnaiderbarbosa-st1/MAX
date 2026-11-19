@@ -3736,6 +3736,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 sexo = gender,
                 idade = age,
                 altura = height,
+                heightCm = height,
                 peso = weight,
                 weightKg = weight,
                 nivelExperiencia = experience,

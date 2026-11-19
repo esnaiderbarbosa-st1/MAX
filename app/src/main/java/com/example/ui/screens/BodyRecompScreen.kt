@@ -48,11 +48,15 @@ import com.example.data.model.PhysiologicalGoalProgress
 import com.example.data.model.RecompClassification
 import com.example.data.model.RecompDeltaItem
 import com.example.data.model.RecompStepCardSummary
+import com.example.data.model.UserProfileData
+import com.example.data.model.calculateAutoBmiOrNull
+import com.example.data.model.resolveValidHeightCmOrNull
 import com.example.domain.recomp.BioimpedanceDetectedTemplate
 import com.example.domain.recomp.BioimpedanceImageParser
 import com.example.domain.recomp.BodyRecompEngine
 import com.example.utils.AudioSynth
 import com.example.utils.BioimpedancePdfExporter
+import com.example.utils.WeightCalculator
 import kotlinx.coroutines.launch
 import java.util.Locale
 import java.util.UUID
@@ -77,6 +81,7 @@ private val RecompSecondaryText = Color(0xFF94A3B8)
  */
 @Composable
 fun BodyRecompProfileEntryCard(
+    userProfile: UserProfileData? = WeightCalculator.activeUserProfile,
     onWeightSyncedToProfile: ((Float) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -285,6 +290,7 @@ fun BodyRecompProfileEntryCard(
             )
         ) {
             BodyRecompScreen(
+                userProfile = userProfile,
                 onBack = {
                     records = BodyRecompEngine.loadRecords(context)
                     showFullDossierModal = false
@@ -314,12 +320,14 @@ fun BodyRecompProfileEntryCard(
 @Composable
 fun BodyRecompScreen(
     onBack: () -> Unit,
+    userProfile: UserProfileData? = WeightCalculator.activeUserProfile,
     onRecordsUpdated: ((List<BioimpedanceRecord>) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     BackHandler(onBack = onBack)
 
     val context = LocalContext.current
+    val activeProfileHeightCm = resolveValidHeightCmOrNull(userProfile ?: WeightCalculator.activeUserProfile)
     var records by remember { mutableStateOf(BodyRecompEngine.loadRecords(context)) }
     // timelineCards está ordenado do mais recente (índice 0) até o Marco Zero #1 (último índice)
     val timelineCards = remember(records) {
@@ -467,7 +475,8 @@ fun BodyRecompScreen(
                             BioimpedancePdfExporter.exportAndShareClinicalPdf(
                                 context = context,
                                 activeRecord = activeRecord,
-                                allRecords = records
+                                allRecords = records,
+                                heightCm = activeProfileHeightCm
                             )
                         }
                     )
@@ -566,6 +575,7 @@ fun BodyRecompScreen(
             latestRecord = newestRecord,
             existingRecords = records,
             editingRecord = editingRecord,
+            profileHeightCm = activeProfileHeightCm,
             onDismiss = {
                 editingRecord = null
                 showCheckInModal = false
@@ -1875,6 +1885,7 @@ private fun WeeklyBioimpedanceCheckInDialog(
     latestRecord: BioimpedanceRecord,
     existingRecords: List<BioimpedanceRecord>,
     editingRecord: BioimpedanceRecord? = null,
+    profileHeightCm: Int? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile),
     onDismiss: () -> Unit,
     onSaveRecord: (BioimpedanceRecord) -> Unit
 ) {
@@ -1957,7 +1968,8 @@ private fun WeeklyBioimpedanceCheckInDialog(
                 context = context,
                 uri = uri,
                 existingRecords = existingRecords,
-                fallbackBase = initialDraft
+                fallbackBase = initialDraft,
+                profileHeightCm = profileHeightCm?.toFloat()
             )
             isExtractingReport = false
             previewBitmap = analysis.renderedBitmap
@@ -2295,7 +2307,8 @@ private fun WeeklyBioimpedanceCheckInDialog(
                                             onClick = {
                                                 val parsedRes = BioimpedanceImageParser.parseRelaxmedicOrFitdaysStructuredText(
                                                     reconstructedText = rawOcrPasteText,
-                                                    fallbackBase = latestRecord
+                                                    fallbackBase = latestRecord,
+                                                    profileHeightCm = profileHeightCm?.toFloat()
                                                 )
                                                 applyParsedRecord(parsedRes.record)
                                                 parserHeadline = parsedRes.statusHeadline
@@ -2357,8 +2370,8 @@ private fun WeeklyBioimpedanceCheckInDialog(
                                 RecompFieldInput("1. Peso (kg)", weightText, {
                                     weightText = it
                                     val w = it.replace(",", ".").toFloatOrNull()
-                                    if (w != null && w > 30f) {
-                                        val autoBmi = w / (1.87f * 1.87f)
+                                    val autoBmi = calculateAutoBmiOrNull(w, profileHeightCm)
+                                    if (autoBmi != null) {
                                         bmiText = String.format(Locale.US, "%.1f", autoBmi)
                                     }
                                 }, modifier = Modifier.weight(1f))

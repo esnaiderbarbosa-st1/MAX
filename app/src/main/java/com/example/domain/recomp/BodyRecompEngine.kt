@@ -8,6 +8,7 @@ import com.example.data.model.PhysiologicalGoalProgress
 import com.example.data.model.RecompClassification
 import com.example.data.model.RecompDeltaItem
 import com.example.data.model.RecompStepCardSummary
+import com.example.data.model.resolveValidHeightCmOrNull
 import com.example.utils.WeightCalculator
 import org.json.JSONArray
 import org.json.JSONObject
@@ -210,7 +211,7 @@ object BodyRecompEngine {
      * substitui pelos 3 registros históricos reais do atleta Esnaider (`95.9 kg`, `85.7 kg`, `84.7 kg`),
      * preservando eventuais registros customizados que o usuário tenha criado com outros pesos.
      */
-    private fun migrateOrFixDuplicateBaselineRecords(
+    internal fun migrateOrFixDuplicateBaselineRecords(
         loaded: List<BioimpedanceRecord>,
         savedMigrationVersion: Int
     ): List<BioimpedanceRecord> {
@@ -221,8 +222,6 @@ object BodyRecompEngine {
             abs(rec.weightKg - 92.4f) < 0.08f ||
                 rec.id.contains("20260528") ||
                 rec.dateTimeLabel.contains("28/05/2026")
-        }.map { rec ->
-            healRelaxmedicPrecisionFields(rec)
         }
 
         // Verifica se todos os registros existentes tinham o mesmo peso (duplicatas acidentais da galeria)
@@ -293,62 +292,6 @@ object BodyRecompEngine {
         return if (deduplicated.isEmpty()) createOfficialDefaultTimeline() else deduplicated.sortedBy { it.timestampMillis }
     }
 
-    /**
-     * Corrige automaticamente registros salvos da leitura Relaxmedic de 85,4 kg (03/11/2026):
-     * - Garante `Tronco: 8,7 kg / 9,5 kg` caso o OCR anterior tenha capturado `10,0 kg` da régua do IMC.
-     * - Garante `explicitFatMassKg = 19.3f` e horário real `03/11/2026 - 06:05` para a leitura de `85,4 kg` / `22,6%`.
-     */
-    private fun healRelaxmedicPrecisionFields(rec: BioimpedanceRecord): BioimpedanceRecord {
-        var fixedSummary = rec.segmentalSummary
-            .replace("Tronco: 10,0 kg / 8,7 kg", "Tronco: 8,7 kg / 9,5 kg")
-            .replace("Tronco: 10.0 kg / 8.7 kg", "Tronco: 8,7 kg / 9,5 kg")
-            .replace("Tronco: 10,0 kg / 9,5 kg", "Tronco: 8,7 kg / 9,5 kg")
-            .replace("Tronco: 10,0 kg", "Tronco: 8,7 kg / 9,5 kg")
-
-        val isNov03Reading = abs(rec.weightKg - 85.4f) < 0.08f && abs(rec.bodyFatPercent - 22.6f) < 0.15f
-        val fixedDateLabel = if (isNov03Reading && rec.dateTimeLabel.startsWith("03/11/2026")) {
-            "03/11/2026 - 06:05"
-        } else {
-            rec.dateTimeLabel
-        }
-        val fixedTs = if (isNov03Reading && fixedDateLabel == "03/11/2026 - 06:05") {
-            BioimpedanceImageParser.buildTimestamp(3, 11, 2026, 6, 5)
-        } else {
-            rec.timestampMillis
-        }
-        val fixedExplicitFatKg = if (isNov03Reading) 19.3f else rec.explicitFatMassKg
-        val fixedBmi = if (rec.weightKg > 30f && abs(rec.bmi - (rec.weightKg / (1.87f * 1.87f))) > 1.2f) {
-            round1(rec.weightKg / (1.87f * 1.87f))
-        } else {
-            rec.bmi
-        }
-
-        return BioimpedanceRecord(
-            id = rec.id,
-            timestampMillis = fixedTs,
-            dateTimeLabel = fixedDateLabel,
-            athleteName = rec.athleteName,
-            sourceApp = rec.sourceApp,
-            weightKg = rec.weightKg,
-            bmi = fixedBmi,
-            bodyFatPercent = rec.bodyFatPercent,
-            muscleRatePercent = rec.muscleRatePercent,
-            fatFreeMassKg = rec.fatFreeMassKg,
-            subcutaneousFatPercent = rec.subcutaneousFatPercent,
-            visceralFatIndex = rec.visceralFatIndex,
-            bodyWaterPercent = rec.bodyWaterPercent,
-            skeletalMusclePercent = rec.skeletalMusclePercent,
-            muscleMassKg = rec.muscleMassKg,
-            boneMassKg = rec.boneMassKg,
-            proteinPercent = rec.proteinPercent,
-            bmrKcal = rec.bmrKcal,
-            metabolicAge = rec.metabolicAge,
-            photoUri = rec.photoUri,
-            segmentalSummary = fixedSummary,
-            explicitFatMassKg = fixedExplicitFatKg
-        )
-    }
-
     private fun extractDateOnly(dateTimeLabel: String): String {
         val m = Regex("([0-3]\\d/[0-1]\\d/20\\d{2})").find(dateTimeLabel)
         return m?.groupValues?.getOrNull(1) ?: dateTimeLabel.take(10).trim()
@@ -405,50 +348,49 @@ object BodyRecompEngine {
      * de um check-in já salvo no mesmo dia, sobrescreve/atualiza o registro daquele dia!
      */
     fun upsertRecord(context: Context, record: BioimpedanceRecord): List<BioimpedanceRecord> {
-        val healedRecord = healRelaxmedicPrecisionFields(record)
         val current = loadRecords(context).toMutableList()
-        val newDateOnly = extractDateOnly(healedRecord.dateTimeLabel)
+        val newDateOnly = extractDateOnly(record.dateTimeLabel)
 
         val existingIdx = current.indexOfFirst { existing ->
             val existingDateOnly = extractDateOnly(existing.dateTimeLabel)
-            existing.id == healedRecord.id ||
+            existing.id == record.id ||
                 (existingDateOnly.isNotEmpty() &&
                     existingDateOnly == newDateOnly &&
-                    abs(existing.weightKg - healedRecord.weightKg) < 0.08f) ||
+                    abs(existing.weightKg - record.weightKg) < 0.08f) ||
                 (existing.id != "baseline_esnaider_20260430_0630" &&
-                    abs(existing.weightKg - healedRecord.weightKg) < 0.05f &&
-                    abs(existing.bodyFatPercent - healedRecord.bodyFatPercent) < 0.05f &&
-                    existing.bmrKcal == healedRecord.bmrKcal)
+                    abs(existing.weightKg - record.weightKg) < 0.05f &&
+                    abs(existing.bodyFatPercent - record.bodyFatPercent) < 0.05f &&
+                    existing.bmrKcal == record.bmrKcal)
         }
 
         if (existingIdx >= 0) {
             val existingId = current[existingIdx].id
             current[existingIdx] = BioimpedanceRecord(
                 id = existingId,
-                timestampMillis = healedRecord.timestampMillis,
-                dateTimeLabel = healedRecord.dateTimeLabel,
-                athleteName = healedRecord.athleteName,
-                sourceApp = healedRecord.sourceApp,
-                weightKg = healedRecord.weightKg,
-                bmi = healedRecord.bmi,
-                bodyFatPercent = healedRecord.bodyFatPercent,
-                muscleRatePercent = healedRecord.muscleRatePercent,
-                fatFreeMassKg = healedRecord.fatFreeMassKg,
-                subcutaneousFatPercent = healedRecord.subcutaneousFatPercent,
-                visceralFatIndex = healedRecord.visceralFatIndex,
-                bodyWaterPercent = healedRecord.bodyWaterPercent,
-                skeletalMusclePercent = healedRecord.skeletalMusclePercent,
-                muscleMassKg = healedRecord.muscleMassKg,
-                boneMassKg = healedRecord.boneMassKg,
-                proteinPercent = healedRecord.proteinPercent,
-                bmrKcal = healedRecord.bmrKcal,
-                metabolicAge = healedRecord.metabolicAge,
-                photoUri = healedRecord.photoUri ?: current[existingIdx].photoUri,
-                segmentalSummary = healedRecord.segmentalSummary.ifBlank { current[existingIdx].segmentalSummary },
-                explicitFatMassKg = healedRecord.explicitFatMassKg
+                timestampMillis = record.timestampMillis,
+                dateTimeLabel = record.dateTimeLabel,
+                athleteName = record.athleteName,
+                sourceApp = record.sourceApp,
+                weightKg = record.weightKg,
+                bmi = record.bmi,
+                bodyFatPercent = record.bodyFatPercent,
+                muscleRatePercent = record.muscleRatePercent,
+                fatFreeMassKg = record.fatFreeMassKg,
+                subcutaneousFatPercent = record.subcutaneousFatPercent,
+                visceralFatIndex = record.visceralFatIndex,
+                bodyWaterPercent = record.bodyWaterPercent,
+                skeletalMusclePercent = record.skeletalMusclePercent,
+                muscleMassKg = record.muscleMassKg,
+                boneMassKg = record.boneMassKg,
+                proteinPercent = record.proteinPercent,
+                bmrKcal = record.bmrKcal,
+                metabolicAge = record.metabolicAge,
+                photoUri = record.photoUri ?: current[existingIdx].photoUri,
+                segmentalSummary = record.segmentalSummary.ifBlank { current[existingIdx].segmentalSummary },
+                explicitFatMassKg = record.explicitFatMassKg
             )
         } else {
-            current.add(healedRecord)
+            current.add(record)
         }
         val sorted = current.sortedBy { it.timestampMillis }
         saveRecords(context, sorted)
@@ -508,14 +450,16 @@ object BodyRecompEngine {
     fun parseFitdaysTextOrImageMetadata(
         rawText: String,
         fallbackBase: BioimpedanceRecord? = null,
-        nowMillis: Long = System.currentTimeMillis()
+        nowMillis: Long = System.currentTimeMillis(),
+        profileHeightCm: Float? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile)?.toFloat()
     ): BioimpedanceRecord {
         val base = fallbackBase ?: createOfficialCheckIn3FitdaysRecord()
         return BioimpedanceImageParser.parseRelaxmedicOrFitdaysStructuredText(
             reconstructedText = rawText,
             fallbackBase = base,
             photoUri = base.photoUri,
-            nowMillis = nowMillis
+            nowMillis = nowMillis,
+            profileHeightCm = profileHeightCm
         ).record
     }
 

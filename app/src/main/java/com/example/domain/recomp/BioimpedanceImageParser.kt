@@ -10,6 +10,8 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.example.data.model.BioimpedanceRecord
+import com.example.data.model.resolveValidHeightCmOrNull
+import com.example.utils.WeightCalculator
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
@@ -100,7 +102,8 @@ object BioimpedanceImageParser {
         context: Context,
         uri: Uri,
         existingRecords: List<BioimpedanceRecord>,
-        fallbackBase: BioimpedanceRecord
+        fallbackBase: BioimpedanceRecord,
+        profileHeightCm: Float? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile)?.toFloat()
     ): ParsedBioimpedanceResult = withContext(Dispatchers.IO) {
         val fileName = queryDisplayName(context, uri)
         val mimeType = runCatching { context.contentResolver.getType(uri) ?: "" }.getOrDefault("")
@@ -120,7 +123,8 @@ object BioimpedanceImageParser {
                     reconstructedText = ocrText,
                     fallbackBase = fallbackBase,
                     photoUri = uri.toString(),
-                    renderedBitmap = bitmap
+                    renderedBitmap = bitmap,
+                    profileHeightCm = profileHeightCm
                 )
                 if (parsedRes.filledIndicatorsCount >= 4) {
                     return@withContext parsedRes
@@ -326,7 +330,8 @@ object BioimpedanceImageParser {
         fallbackBase: BioimpedanceRecord,
         photoUri: String? = fallbackBase.photoUri,
         renderedBitmap: Bitmap? = null,
-        nowMillis: Long = System.currentTimeMillis()
+        nowMillis: Long = System.currentTimeMillis(),
+        profileHeightCm: Float? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile)?.toFloat()
     ): ParsedBioimpedanceResult {
         val allLinesWithMarkers = reconstructedText
             .lines()
@@ -335,7 +340,7 @@ object BioimpedanceImageParser {
 
         val rawLines = allLinesWithMarkers.filter { !it.startsWith("===") }
 
-        var heightCm = 187f
+        var heightCm: Float? = profileHeightCm?.takeIf { it in 100f..230f }
         var detectedDateLabel: String? = extractExamDateTimeFromReport(reconstructedText, rawLines)
         var bodyScore: Int? = null
 
@@ -378,7 +383,7 @@ object BioimpedanceImageParser {
 
             // 1. Cabeçalho: Altura e Data/Hora da Medição
             heightRegex.find(line)?.groupValues?.getOrNull(1)?.replace(',', '.')?.toFloatOrNull()?.let { h ->
-                if (h in 120f..230f) heightCm = h
+                if (h in 100f..230f) heightCm = h
             }
             if (detectedDateLabel == null || !detectedDateLabel!!.contains(":")) {
                 dateRegex.find(line)?.value?.let { rawDate ->
@@ -693,8 +698,9 @@ object BioimpedanceImageParser {
         if (proteinPercent == null && proteinKg != null && finalWeightKg > 30f) {
             proteinPercent = convertKgMetricToPercent(proteinKg!!, finalWeightKg)
         }
-        if (finalWeightKg > 30f && heightCm > 100f) {
-            val hm = heightCm / 100f
+        val validHeightCm = heightCm?.takeIf { it in 100f..230f }
+        if (finalWeightKg > 30f && validHeightCm != null) {
+            val hm = validHeightCm / 100f
             val calculatedBmi = (((finalWeightKg / (hm * hm)) * 10f).roundToInt() / 10f)
             // Trava de precisão do IMC: se o OCR não leu ou divergiu em > 1.2 do cálculo real (ex: leu Idade 49/50), crava o IMC matemático exato
             if (bmi == null || abs(bmi!! - calculatedBmi) > 1.2f) {

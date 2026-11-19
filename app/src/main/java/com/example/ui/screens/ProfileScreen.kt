@@ -461,6 +461,7 @@ fun ProfileScreen(
             // =========================================================================
             item {
                 BodyRecompProfileEntryCard(
+                    userProfile = profile,
                     onWeightSyncedToProfile = { updatedWeightKg ->
                         viewModel.updateProfileData(
                             profile.nome,
