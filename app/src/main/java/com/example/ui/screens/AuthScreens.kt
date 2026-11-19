@@ -466,39 +466,41 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    if (com.example.BuildConfig.DEBUG) {
+                        Spacer(modifier = Modifier.height(12.dp))
 
-                    OutlinedButton(
-                        onClick = {
-                            isLoading = true
-                            coroutineScope.launch {
-                                val result = UserManager.login(context, "maria.oliveira@email.com", "senha_generica_sucesso")
-                                isLoading = false
-                                if (result.isSuccess) {
-                                    onAuthSuccess()
-                                } else {
-                                    val sharedPrefs = context.getSharedPreferences("max_user_prefs", android.content.Context.MODE_PRIVATE)
-                                    sharedPrefs.edit().putString("logged_in_user_id", "user_demo_2").apply()
-                                    UserManager.init(context)
-                                    onAuthSuccess()
+                        OutlinedButton(
+                            onClick = {
+                                isLoading = true
+                                coroutineScope.launch {
+                                    val result = UserManager.login(context, "maria.oliveira@email.com", "senha_generica_sucesso")
+                                    isLoading = false
+                                    if (result.isSuccess) {
+                                        onAuthSuccess()
+                                    } else {
+                                        val sharedPrefs = context.getSharedPreferences("max_user_prefs", android.content.Context.MODE_PRIVATE)
+                                        sharedPrefs.edit().putString("logged_in_user_id", "user_demo_2").apply()
+                                        UserManager.init(context)
+                                        onAuthSuccess()
+                                    }
                                 }
-                            }
-                        },
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Primary),
-                        border = BorderStroke(1.dp, Primary.copy(alpha = 0.5f)),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("auth_bypass_button"),
-                        enabled = !isLoading
-                    ) {
-                        Text(
-                            text = "ENTRAR SEM LOGIN",
-                            color = Primary,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        )
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Primary),
+                            border = BorderStroke(1.dp, Primary.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("auth_bypass_button"),
+                            enabled = !isLoading
+                        ) {
+                            Text(
+                                text = "ENTRAR SEM LOGIN",
+                                color = Primary,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                        }
                     }
                 }
             }

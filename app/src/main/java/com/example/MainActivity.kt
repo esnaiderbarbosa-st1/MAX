@@ -572,7 +572,7 @@ class MainActivity : ComponentActivity() {
                             activity?.moveTaskToBack(true)
                         }
                     }
-                    androidx.activity.compose.BackHandler(enabled = activeScreen == AppScreen.BETA_LAB) {
+                    androidx.activity.compose.BackHandler(enabled = com.example.BuildConfig.DEBUG && activeScreen == AppScreen.BETA_LAB) {
                         viewModel.activeScreen.value = AppScreen.PROFILE
                     }
                     androidx.activity.compose.BackHandler(enabled = activeScreen == AppScreen.RUNNING_HISTORY) {
@@ -1045,7 +1045,11 @@ fun ScaffoldContent(screen: AppScreen, viewModel: MainViewModel, modifier: Modif
                 AppScreen.CREATOR -> WorkoutScreen(viewModel = viewModel) // handoff internally handled
                 AppScreen.CONCLUIDO -> CompletedWorkoutScreen(viewModel = viewModel)
                 AppScreen.DIARIO -> RunningHistoryScreen(viewModel = viewModel)
-                AppScreen.BETA_LAB -> com.example.ui.screens.BetaLabScreen(viewModel = viewModel)
+                AppScreen.BETA_LAB -> if (com.example.BuildConfig.DEBUG) {
+                    com.example.ui.screens.BetaLabScreen(viewModel = viewModel)
+                } else {
+                    HomeScreen(viewModel = viewModel)
+                }
                 AppScreen.SHARE_CARD -> com.example.ui.screens.ShareCardEditorScreen(viewModel = viewModel)
                 AppScreen.RUNNING_DETAIL -> com.example.ui.screens.RunningSessionDetailScreen(viewModel = viewModel)
                 AppScreen.GYM -> com.example.ui.components.RunningPlanningScreen(viewModel = viewModel)

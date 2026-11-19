@@ -1186,131 +1186,133 @@ fun AppSettingsScreen(
 
                         HorizontalDivider(color = cardBorder, thickness = 1.dp)
 
-                        // Troca de Perfil de Teste (Esnaider / Alyne)
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                text = "Troca de Perfil de Teste (Pré-definidos)",
-                                color = primaryText,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Alterne rapidamente os dados fisiológicos de teste sem poluir a tela principal de Perfil:",
-                                color = secondaryText,
-                                fontSize = 11.sp
-                            )
+                        if (com.example.BuildConfig.DEBUG) {
+                            // Troca de Perfil de Teste (Esnaider / Alyne)
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "Troca de Perfil de Teste (Pré-definidos)",
+                                    color = primaryText,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Alterne rapidamente os dados fisiológicos de teste sem poluir a tela principal de Perfil:",
+                                    color = secondaryText,
+                                    fontSize = 11.sp
+                                )
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                val isEsnaider = profile.nome.contains("Esnaider", ignoreCase = true)
-                                Surface(
-                                    onClick = {
-                                        viewModel.loadPresetProfile(UserProfileData.PRESET_ESNAIDER)
-                                        Toast.makeText(context, "Perfil de teste alterado para Esnaider", Toast.LENGTH_SHORT).show()
-                                    },
-                                    color = if (isEsnaider) brandAccent.copy(alpha = 0.2f) else Color(0xFF181C26),
-                                    border = BorderStroke(1.dp, if (isEsnaider) brandAccent else cardBorder),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("btn_preset_esnaider")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    val isEsnaider = profile.nome.contains("Esnaider", ignoreCase = true)
+                                    Surface(
+                                        onClick = {
+                                            viewModel.loadPresetProfile(UserProfileData.PRESET_ESNAIDER)
+                                            Toast.makeText(context, "Perfil de teste alterado para Esnaider", Toast.LENGTH_SHORT).show()
+                                        },
+                                        color = if (isEsnaider) brandAccent.copy(alpha = 0.2f) else Color(0xFF181C26),
+                                        border = BorderStroke(1.dp, if (isEsnaider) brandAccent else cardBorder),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("btn_preset_esnaider")
                                     ) {
-                                        Text(
-                                            text = "Esnaider",
-                                            color = if (isEsnaider) brandAccent else primaryText,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp
-                                        )
-                                        Text(
-                                            text = "M • 50a • 85kg • 1,87m",
-                                            color = secondaryText,
-                                            fontSize = 10.sp
-                                        )
-                                        Text(
-                                            text = "AVANÇADO",
-                                            color = brandAccent,
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
+                                        Column(
+                                            modifier = Modifier.padding(12.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Text(
+                                                text = "Esnaider",
+                                                color = if (isEsnaider) brandAccent else primaryText,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp
+                                            )
+                                            Text(
+                                                text = "M • 50a • 85kg • 1,87m",
+                                                color = secondaryText,
+                                                fontSize = 10.sp
+                                            )
+                                            Text(
+                                                text = "AVANÇADO",
+                                                color = brandAccent,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
-                                }
 
-                                val isAlyne = profile.nome.contains("Alyne", ignoreCase = true)
-                                Surface(
-                                    onClick = {
-                                        viewModel.loadPresetProfile(UserProfileData.PRESET_ALYNE)
-                                        Toast.makeText(context, "Perfil de teste alterado para Alyne", Toast.LENGTH_SHORT).show()
-                                    },
-                                    color = if (isAlyne) brandAccent.copy(alpha = 0.2f) else Color(0xFF181C26),
-                                    border = BorderStroke(1.dp, if (isAlyne) brandAccent else cardBorder),
-                                    shape = RoundedCornerShape(10.dp),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .testTag("btn_preset_alyne")
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(12.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    val isAlyne = profile.nome.contains("Alyne", ignoreCase = true)
+                                    Surface(
+                                        onClick = {
+                                            viewModel.loadPresetProfile(UserProfileData.PRESET_ALYNE)
+                                            Toast.makeText(context, "Perfil de teste alterado para Alyne", Toast.LENGTH_SHORT).show()
+                                        },
+                                        color = if (isAlyne) brandAccent.copy(alpha = 0.2f) else Color(0xFF181C26),
+                                        border = BorderStroke(1.dp, if (isAlyne) brandAccent else cardBorder),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("btn_preset_alyne")
                                     ) {
-                                        Text(
-                                            text = "Alyne",
-                                            color = if (isAlyne) brandAccent else primaryText,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp
-                                        )
-                                        Text(
-                                            text = "F • 42a • 72kg • 1,55m",
-                                            color = secondaryText,
-                                            fontSize = 10.sp
-                                        )
-                                        Text(
-                                            text = "AVANÇADO",
-                                            color = brandAccent,
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
+                                        Column(
+                                            modifier = Modifier.padding(12.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Text(
+                                                text = "Alyne",
+                                                color = if (isAlyne) brandAccent else primaryText,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp
+                                            )
+                                            Text(
+                                                text = "F • 42a • 72kg • 1,55m",
+                                                color = secondaryText,
+                                                fontSize = 10.sp
+                                            )
+                                            Text(
+                                                text = "AVANÇADO",
+                                                color = brandAccent,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
                                 }
                             }
-                        }
 
-                        HorizontalDivider(color = cardBorder, thickness = 1.dp)
+                            HorizontalDivider(color = cardBorder, thickness = 1.dp)
 
-                        // Laboratório Beta
-                        Surface(
-                            onClick = {
-                                AudioSynth.playTickSound()
-                                viewModel.activeScreen.value = AppScreen.BETA_LAB
-                            },
-                            color = Color(0xFF181C26),
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, Color(0xFF242A38)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            // Laboratório Beta
+                            Surface(
+                                onClick = {
+                                    AudioSynth.playTickSound()
+                                    viewModel.activeScreen.value = AppScreen.BETA_LAB
+                                },
+                                color = Color(0xFF181C26),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFF242A38)),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Default.Science, contentDescription = null, tint = brandAccent)
-                                    Column {
-                                        Text("Laboratório Beta", color = primaryText, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                        Text("Avalie novas funcionalidades e módulos experimentais", color = secondaryText, fontSize = 11.sp)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Icon(Icons.Default.Science, contentDescription = null, tint = brandAccent)
+                                        Column {
+                                            Text("Laboratório Beta", color = primaryText, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                            Text("Avalie novas funcionalidades e módulos experimentais", color = secondaryText, fontSize = 11.sp)
+                                        }
                                     }
+                                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = secondaryText)
                                 }
-                                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = secondaryText)
                             }
                         }
 
@@ -1409,13 +1411,15 @@ fun AppSettingsScreen(
                                     ) {
                                         Text("Gerar 5x Cardio", color = primaryText, fontSize = 10.sp)
                                     }
-                                    OutlinedButton(
-                                        onClick = { viewModel.devSimulateLowRecovery() },
-                                        shape = RoundedCornerShape(8.dp),
-                                        border = BorderStroke(1.dp, cardBorder),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Simular Fadiga", color = primaryText, fontSize = 10.sp)
+                                    if (com.example.BuildConfig.DEBUG) {
+                                        OutlinedButton(
+                                            onClick = { viewModel.devSimulateLowRecovery() },
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, cardBorder),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("Simular Fadiga", color = primaryText, fontSize = 10.sp)
+                                        }
                                     }
                                 }
 

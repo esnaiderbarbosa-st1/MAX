@@ -229,11 +229,10 @@ object UserManager {
         }
 
         try {
-            // Standard Firebase Authentication SDK Simulation Log
-            Log.i(TAG, "Connecting to Firebase Auth API to create user: $email")
-            Log.i(TAG, "Syncing Firebase Firestore profile database...")
-
             val userId = "user_${UUID.randomUUID().toString().take(8)}"
+            // Standard Firebase Authentication SDK Simulation Log
+            Log.i(TAG, "Connecting to Firebase Auth API to create user: $userId")
+            Log.i(TAG, "Syncing Firebase Firestore profile database...")
             // Automatically approve in testing mode to facilitate local developer/testing setup (Correção 1)
             val isTestingMode = isTestingMode(context)
             val level = if (isTestingMode) "INTERMEDIARIO" else "PENDENTE"
@@ -326,7 +325,7 @@ object UserManager {
             .putString(KEY_LOGGED_IN_USER_ID, updatedUser.id)
             .apply()
 
-        Log.i(TAG, "Login successful: ${user.email} (Level: ${user.nivelAcesso})")
+        Log.i(TAG, "Login successful: ${user.id} (Level: ${user.nivelAcesso})")
         return Result.success(updatedUser)
     }
 

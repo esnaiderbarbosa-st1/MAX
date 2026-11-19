@@ -7,7 +7,7 @@ interface DeveloperModeProvider {
 }
 
 class BuildDeveloperModeProvider : DeveloperModeProvider {
-    override val isEnabled = BuildConfig.DEBUG || BuildConfig.BETA
+    override val isEnabled = BuildConfig.DEBUG
 }
 
 object DeveloperMode {

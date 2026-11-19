@@ -759,122 +759,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         AudioSynth.setVolumeFactor(it.value)
     }
 
-    val selectedDecisionScenario = MutableStateFlow("PADRAO")
-
     val recommendationDecision: StateFlow<com.example.services.recommendation.DecisionResult> = combine(
         userProfile,
         history,
-        activeGymProfile,
-        selectedDecisionScenario
-    ) { prof, hist, gym, scenario ->
+        activeGymProfile
+    ) { prof, hist, gym ->
         val engine = com.example.services.recommendation.RecommendationEngine()
-        
-        // Base defaults
-        var exp = prof.nivelExperiencia
-        var dur = 60
-        var obj = if (prof.nivelExperiencia == "Iniciante") "Adaptação" else "Hipertrofia"
-        var fatigue = if (hist.size > 8) 5.5 else 2.0
-        var rec = if (hist.isNotEmpty()) 8.0 else 10.0
-        var injured: List<String> = emptyList()
-        var busy = false
-        var targetWeekly = prof.metaSemanal
-        var finalHist = hist
 
-        fun createDummyHistory(count: Int): List<com.example.data.model.WorkoutHistoryEntry> {
-            val dummy = mutableListOf<com.example.data.model.WorkoutHistoryEntry>()
-            for (i in 1..count) {
-                dummy.add(
-                    com.example.data.model.WorkoutHistoryEntry(
-                        id = "dummy-$i",
-                        workoutId = "w-$i",
-                        workoutName = "Treino $i",
-                        date = System.currentTimeMillis() - i * 24 * 60 * 60 * 1000L,
-                        durationSeconds = 3300L,
-                        totalWeight = 1200f,
-                        exercisesCompletedCount = 5,
-                        exercisesJson = "[]"
-                    )
-                )
-            }
-            return dummy
-        }
-
-        when (scenario) {
-            "DOR_LESAO" -> {
-                injured = listOf("Joelho")
-                fatigue = 3.0
-                rec = 8.0
-            }
-            "RECUPERACAO_BAIXA" -> {
-                rec = 3.5
-                fatigue = 8.0
-            }
-            "ESTABILIZACAO_SONO" -> {
-                fatigue = 6.5
-                rec = 6.0
-                finalHist = createDummyHistory(15)
-            }
-            "FALHA_REPETICOES" -> {
-                fatigue = 5.5
-                rec = 5.5
-            }
-            "PROGRESSAO_INTENSIDADE" -> {
-                rec = 9.0
-                fatigue = 2.0
-                finalHist = createDummyHistory(5)
-            }
-            "ADERENCIA_BAIXA" -> {
-                targetWeekly = 5
-                finalHist = listOf(
-                    com.example.data.model.WorkoutHistoryEntry(
-                        id = "d1", workoutId = "w1", workoutName = "Treino",
-                        date = System.currentTimeMillis() - 2 * 24 * 60 * 60 * 1000L,
-                        durationSeconds = 3600L, exercisesCompletedCount = 4, totalWeight = 1000f,
-                        exercisesJson = "[]"
-                    ),
-                    com.example.data.model.WorkoutHistoryEntry(
-                        id = "d2", workoutId = "w2", workoutName = "Treino",
-                        date = System.currentTimeMillis() - 9 * 24 * 60 * 60 * 1000L,
-                        durationSeconds = 3600L, exercisesCompletedCount = 4, totalWeight = 1000f,
-                        exercisesJson = "[]"
-                    )
-                )
-            }
-            "MUDANCA_DIAS" -> {
-                targetWeekly = 3
-                finalHist = createDummyHistory(5)
-            }
-            "ACADEMIA_LOTADA" -> {
-                busy = true
-            }
-            "INICIANTE_EXPRESS" -> {
-                exp = "Iniciante"
-                dur = 35
-            }
-            "VOLUME_FADIGA" -> {
-                fatigue = 7.0
-                val list = mutableListOf<com.example.data.model.WorkoutHistoryEntry>()
-                for (i in 1..12) {
-                    list.add(
-                        com.example.data.model.WorkoutHistoryEntry(
-                            id = "vol-$i", workoutId = "w", workoutName = "Treino",
-                            date = System.currentTimeMillis() - i * 24 * 60 * 60 * 1000L,
-                            durationSeconds = 3600L, exercisesCompletedCount = 5, totalWeight = 1000f,
-                            exercisesJson = "[]"
-                        )
-                    )
-                }
-                finalHist = list
-            }
-            "MONOTONIA" -> {
-                finalHist = createDummyHistory(25)
-            }
-            "NOVO_BLOCO" -> {
-                finalHist = createDummyHistory(35)
-                fatigue = 2.0
-                rec = 9.0
-            }
-        }
+        // Base defaults (PADRAO)
+        val exp = prof.nivelExperiencia
+        val dur = 60
+        val obj = if (prof.nivelExperiencia == "Iniciante") "Adaptação" else "Hipertrofia"
+        val fatigue = if (hist.size > 8) 5.5 else 2.0
+        val rec = if (hist.isNotEmpty()) 8.0 else 10.0
+        val targetWeekly = prof.metaSemanal
 
         val context = com.example.engine.WorkoutContext(
             durationMinutes = dur,
@@ -889,13 +787,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             availableTime = dur,
             fatigueLevel = fatigue,
             recoveryProfile = rec,
-            injuredMuscles = injured,
+            injuredMuscles = emptyList(),
             constraints = com.example.engine.WorkoutConstraints(
-                busyGym = busy,
+                busyGym = false,
                 timeLimitMinutes = dur
             )
         )
-        engine.makeDecision(context, finalHist, targetWeekly)
+        engine.makeDecision(context, hist, targetWeekly)
     }.stateIn(
         viewModelScope,
         SharingStarted.Eagerly,
@@ -921,7 +819,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // AI Coach Interaction States
     val aiCoachResponse = MutableStateFlow<String?>(null)
     val isAiLoading = MutableStateFlow(false)
-    val bioimpedanceScanWarning = MutableStateFlow<String?>(null)
     val aiQueriesToday = MutableStateFlow(0)
 
     // Gym Profile (MVP) - Machine Default Weights
@@ -3901,222 +3798,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.clearHistory()
             com.example.data.repository.ExerciseHistoryRepository.clearCache()
             AudioSynth.playTickSound()
-        }
-    }
-
-    private fun parseGeminiExtractJson(jsonStr: String): com.example.services.supabase.SupabaseService.SupabaseResponse {
-        try {
-            val obj = org.json.JSONObject(jsonStr)
-            
-            if (obj.has("dados_encontrados")) {
-                val dados = obj.optJSONObject("dados_encontrados") ?: return com.example.services.supabase.SupabaseService.SupabaseResponse()
-                
-                fun getFloatVal(key: String): Float? {
-                    val valueObj = dados.opt(key) ?: return null
-                    if (valueObj is org.json.JSONObject) {
-                        val v = valueObj.optDouble("valor", Double.NaN)
-                        if (!v.isNaN()) return v.toFloat()
-                    } else if (valueObj is Number) {
-                        return valueObj.toFloat()
-                    } else if (valueObj is String) {
-                        return valueObj.toFloatOrNull()
-                    }
-                    return null
-                }
-                
-                fun getIntVal(key: String): Int? {
-                    val valueObj = dados.opt(key) ?: return null
-                    if (valueObj is org.json.JSONObject) {
-                        val v = valueObj.optInt("valor", -1)
-                        if (v != -1) return v
-                    } else if (valueObj is Number) {
-                        return valueObj.toInt()
-                    } else if (valueObj is String) {
-                        return valueObj.toIntOrNull()
-                    }
-                    return null
-                }
-
-                val dateExtracao = obj.optString("data_extracao", "")
-                val finalDate = if (dateExtracao.isNotBlank()) {
-                    dateExtracao
-                } else {
-                    val nestedExtracao = dados.optString("data_extracao", "")
-                    if (nestedExtracao.isNotBlank()) nestedExtracao else {
-                        val nestedExame = dados.optString("data_exame", "")
-                        if (nestedExame.isNotBlank()) nestedExame else {
-                            val nestedData = dados.optString("data", "")
-                            if (nestedData.isNotBlank()) nestedData else {
-                                val rootExame = obj.optString("data_exame", "")
-                                if (rootExame.isNotBlank()) rootExame else obj.optString("data", "")
-                            }
-                        }
-                    }
-                }
-                
-                return com.example.services.supabase.SupabaseService.SupabaseResponse(
-                    reading_date = if (finalDate.isNotBlank()) finalDate else null,
-                    weight_kg = getFloatVal("peso"),
-                    body_fat_pct = getFloatVal("gordura"),
-                    muscle_rate_pct = getFloatVal("taxa_muscular"),
-                    imc = getFloatVal("imc"),
-                    fat_free_mass_kg = getFloatVal("massa_magra"),
-                    subcutaneous_fat_pct = getFloatVal("gordura_subcutanea"),
-                    visceral_fat = getFloatVal("gordura_visceral"),
-                    body_water_pct = getFloatVal("agua_corporal"),
-                    skeletal_muscle_mass_kg = getFloatVal("massa_muscular_esqueletica"),
-                    muscle_mass_kg = getFloatVal("massa_muscular"),
-                    bone_mass_kg = getFloatVal("massa_ossea"),
-                    protein_pct = getFloatVal("proteina"),
-                    bmr_kcal = getIntVal("tmb"),
-                    metabolic_age = getIntVal("idade_metabolica")
-                )
-            } else {
-                // Flat structure fallback
-                fun optFloat(key: String): Float? {
-                    val v = obj.optDouble(key, Double.NaN)
-                    return if (!v.isNaN()) v.toFloat() else null
-                }
-                fun optInt(key: String): Int? {
-                    val v = obj.optInt(key, -1)
-                    return if (v != -1) v else null
-                }
-                
-                val dateStr = obj.optString("dateStr", "")
-                val finalDate = if (dateStr.isNotEmpty()) dateStr else obj.optString("date", "")
-                
-                return com.example.services.supabase.SupabaseService.SupabaseResponse(
-                    reading_date = if (finalDate.isNotEmpty()) finalDate else null,
-                    weight_kg = optFloat("peso") ?: optFloat("weight_kg") ?: optFloat("peso_kg"),
-                    body_fat_pct = optFloat("percentualGordura") ?: optFloat("body_fat_pct") ?: optFloat("gordura"),
-                    muscle_rate_pct = optFloat("taxaMuscular") ?: optFloat("muscle_rate_pct") ?: optFloat("taxa_muscular"),
-                    imc = optFloat("imc"),
-                    fat_free_mass_kg = optFloat("massaMagra") ?: optFloat("fat_free_mass_kg") ?: optFloat("massa_magra"),
-                    subcutaneous_fat_pct = optFloat("gorduraSubcutanea") ?: optFloat("subcutaneous_fat_pct") ?: optFloat("gordura_subcutanea"),
-                    visceral_fat = optFloat("gorduraVisceral") ?: optFloat("visceral_fat") ?: optFloat("gordura_visceral"),
-                    body_water_pct = optFloat("aguaCorporal") ?: optFloat("body_water_pct") ?: optFloat("agua_corporal"),
-                    skeletal_muscle_mass_kg = optFloat("massaMuscularEsqueletica") ?: optFloat("skeletal_muscle_mass_kg") ?: optFloat("massa_muscular_esqueletica"),
-                    muscle_mass_kg = optFloat("massaMuscular") ?: optFloat("muscle_mass_kg") ?: optFloat("massa_muscular"),
-                    bone_mass_kg = optFloat("massaOssea") ?: optFloat("bone_mass_kg") ?: optFloat("massa_ossea"),
-                    protein_pct = optFloat("proteina") ?: optFloat("protein_pct") ?: optFloat("proteina_pct"),
-                    bmr_kcal = optInt("tmb") ?: optInt("bmr_kcal") ?: optInt("tmb_kcal"),
-                    metabolic_age = optInt("idadeMetabolica") ?: optInt("metabolic_age") ?: optInt("idade_metabolica")
-                )
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("MAX_PERFORMANCE_DEBUG", "Failed to parse Gemini extracted JSON, returning empty response for fallback", e)
-            return com.example.services.supabase.SupabaseService.SupabaseResponse()
-        }
-    }
-
-    // --- REAL BIOIMPEDANCE SCANNER (SEM FABRICAÇÃO DE DADOS EM FALHA) ---
-    fun scanBioimpedance(base64Image: String, onResult: (BioimpedanceRecord) -> Unit, onError: (String) -> Unit) {
-        viewModelScope.launch {
-            isAiLoading.value = true
-            bioimpedanceScanWarning.value = null
-            try {
-                val apiKey = com.example.BuildConfig.GEMINI_API_KEY_1
-                val isKeyInvalid = apiKey.isBlank() || apiKey.contains("MY_GEMINI") || apiKey.contains("placeholder")
-
-                if (isKeyInvalid) {
-                    val msg = "Chave da API Gemini não configurada ou inválida. Não foi possível ler a bioimpedância."
-                    android.util.Log.w("MAX_PERFORMANCE_DEBUG", msg)
-                    bioimpedanceScanWarning.value = msg
-                    onError(msg)
-                    return@launch
-                }
-
-                val res = try {
-                    try {
-                        val rawJson = com.example.services.ai.GeminiService.extractBioimpedanceFromImage(
-                            base64Image = base64Image,
-                            profileWeight = userProfile.value.peso,
-                            profileBf = userProfile.value.percentualGordura,
-                            profileHeight = userProfile.value.altura,
-                            profileAge = userProfile.value.idade
-                        )
-                        parseGeminiExtractJson(rawJson)
-                    } catch (directEx: Exception) {
-                        android.util.Log.w("MAX_PERFORMANCE_DEBUG", "Direct Gemini extraction failed. Trying Supabase...", directEx)
-                        com.example.services.supabase.SupabaseService.analyzeBioimpedance(base64Image)
-                    }
-                } catch (e: Exception) {
-                    val errMsg = e.message ?: ""
-                    if (errMsg.contains("401") || errMsg.contains("Unauthorized") || errMsg.contains("Invalid API key") || errMsg.contains("Invalid key")) {
-                        val msg = "Chave da API inválida ou expirada (401). Não foi possível processar o exame."
-                        android.util.Log.e("MAX_PERFORMANCE_DEBUG", msg, e)
-                        bioimpedanceScanWarning.value = msg
-                        onError(msg)
-                        return@launch
-                    } else {
-                        throw e
-                    }
-                }
-
-                val hasAnyRealReading = (res.weight_kg ?: 0f) > 0f ||
-                    (res.body_fat_pct ?: 0f) > 0f ||
-                    (res.imc ?: 0f) > 0f ||
-                    (res.fat_free_mass_kg ?: 0f) > 0f
-                if (!hasAnyRealReading) {
-                    val msg = "Não foi possível extrair os dados do exame de bioimpedância."
-                    bioimpedanceScanWarning.value = msg
-                    onError(msg)
-                    return@launch
-                }
-                
-                // Construct BioimpedanceRecord
-                val formats = listOf("yyyy-MM-dd HH:mm", "yyyy-MM-dd", "dd/MM/yyyy HH:mm", "dd/MM/yyyy")
-                var parsedTime = System.currentTimeMillis()
-                val dateStr = res.reading_date
-                if (!dateStr.isNullOrBlank()) {
-                    for (fmt in formats) {
-                        try {
-                            val sdf = java.text.SimpleDateFormat(fmt, java.util.Locale.getDefault())
-                            val d = sdf.parse(dateStr)
-                            if (d != null) {
-                                parsedTime = d.time
-                                break
-                            }
-                        } catch (e: Exception) {}
-                    }
-                }
-
-                val record = BioimpedanceRecord(
-                    id = "bio_" + java.util.UUID.randomUUID().toString(),
-                    date = parsedTime,
-                    peso = res.weight_kg ?: 0f,
-                    imc = res.imc ?: 0f,
-                    percentualGordura = res.body_fat_pct ?: 0f,
-                    taxaMuscular = res.muscle_rate_pct ?: 0f,
-                    massaMagra = res.fat_free_mass_kg ?: 0f,
-                    gorduraSubcutanea = res.subcutaneous_fat_pct ?: 0f,
-                    gorduraVisceral = res.visceral_fat ?: 0f,
-                    aguaCorporal = res.body_water_pct ?: 0f,
-                    massaMuscularEsqueletica = res.skeletal_muscle_mass_kg ?: 0f,
-                    massaMuscular = res.muscle_mass_kg ?: 0f,
-                    massaOssea = res.bone_mass_kg ?: 0f,
-                    proteina = res.protein_pct ?: 0f,
-                    tmb = res.bmr_kcal ?: 0,
-                    idadeMetabolica = res.metabolic_age ?: 0
-                )
-
-                val isPartial = res._partialData == true
-                val hasWarnings = !res._warnings.isNullOrEmpty()
-                
-                if (isPartial) {
-                    bioimpedanceScanWarning.value = "Alguns dados não foram lidos. Verifique se a imagem está nítida."
-                } else if (hasWarnings) {
-                    bioimpedanceScanWarning.value = "Alguns campos não foram lidos corretamente. Você pode editá-los manualmente."
-                } else {
-                    bioimpedanceScanWarning.value = null
-                }
-
-                onResult(record)
-            } catch (e: Exception) {
-                onError(e.message ?: "Erro desconhecido")
-            } finally {
-                isAiLoading.value = false
-            }
         }
     }
 

@@ -46,7 +46,6 @@ import com.example.data.model.computeCoherent5ZoneDistribution
 import com.example.ui.theme.RunColors
 import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.exp
 import kotlin.math.roundToInt
 
 data class HrZoneDefinition(
@@ -111,21 +110,6 @@ fun getHrColorForBpm(bpm: Float): Color {
         bpm <= 160f -> Color(0xFFFF8A00)
         else -> Color(0xFFFF453A)
     }
-}
-
-/**
- * Retorna exclusivamente as amostras reais válidas de frequência cardíaca (45..240 bpm),
- * sem alterar leituras gravadas nem fabricar dados sintéticos com Random.
- */
-fun generateRealisticHrSamples(
-    sessionId: String?,
-    avgHr: Int?,
-    maxHr: Int?,
-    durationSec: Int = 1800,
-    recordedSamples: List<Int> = emptyList(),
-    splits: List<RecordedKmSplit> = emptyList()
-): List<Int> {
-    return recordedSamples.filter { it in 45..240 }
 }
 
 /**
