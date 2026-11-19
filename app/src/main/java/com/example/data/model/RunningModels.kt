@@ -2456,7 +2456,6 @@ fun buildRunPhysiologyDossier(
 
     // 1. Calorias Ativas vs. Total de Kcal (função única com peso válido; sem peso válido, não calcula com 70 kg silencioso)
     val validWeightKg = resolveValidWeightKgOrNull(userProfile)
-    val userWeightKg = validWeightKg ?: resolveWeightKg(userProfile)
     val heightCm = userProfile?.heightCm?.takeIf { it > 0 } ?: userProfile?.altura?.takeIf { it > 0 }
     val ageYears = userProfile?.idade?.takeIf { it > 0 }
     val isFemale = userProfile?.sexo?.equals("Feminino", ignoreCase = true) == true

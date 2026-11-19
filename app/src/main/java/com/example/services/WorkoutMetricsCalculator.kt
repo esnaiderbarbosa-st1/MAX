@@ -50,7 +50,7 @@ object WorkoutMetricsCalculator {
         totalElapsedSec: Int,
         totalMeasuredDistanceMeters: Double,
         splitIntervalKm: Float, // 0.25f, 0.5f, 1.0f, ou -1.0f para "por bloco"
-        userWeightKg: Float = 70.0f
+        userWeightKg: Float? = null
     ): WorkoutMetricsResult {
         val blocks = plan?.blocks ?: emptyList()
         
@@ -112,7 +112,11 @@ object WorkoutMetricsCalculator {
         val cargaDuration = blockSummaries.sumOf { it.durationSec }
         val cargaDist = if (totalMeasuredDistanceMeters > 0.0) totalMeasuredDistanceMeters else 0.0
         val cargaCalories = if (cargaDist > 0.0) {
-            ((cargaDist / 1000.0) * userWeightKg * 1.03).roundToInt().coerceAtLeast(1)
+            com.example.data.model.calculateRunActiveCaloriesKcal(
+                distanceMeters = cargaDist.roundToInt(),
+                userProfile = null,
+                weightKgOverride = userWeightKg
+            ) ?: 0
         } else {
             0
         }

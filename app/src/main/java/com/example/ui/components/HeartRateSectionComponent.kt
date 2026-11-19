@@ -160,7 +160,7 @@ fun buildTimeAxisLabels(durationSec: Int, tickCount: Int = 6): List<String> {
 private fun calculateAverageWalkRecoveryDropBpm(
     samples: List<Int>,
     splits: List<RecordedKmSplit>
-): Int {
+): Int? {
     // 1. Tenta via splits de corrida vs caminhada se disponíveis
     val runHrs = splits.filter { it.phaseTag == "RUN" || it.phaseTag == "PR" }.mapNotNull { it.avgHr }
     val walkHrs = splits.filter { it.phaseTag == "WALK" }.mapNotNull { it.avgHr }
@@ -170,7 +170,7 @@ private fun calculateAverageWalkRecoveryDropBpm(
     }
 
     // 2. Detecta picos locais seguidos de vales de recuperação na curva de amostras
-    if (samples.size < 6) return 14
+    if (samples.size < 6) return null
     val drops = mutableListOf<Int>()
     val window = (samples.size / 8).coerceIn(3, 12)
     var i = 2
@@ -309,6 +309,7 @@ private fun HaylouHeartRateCanvas(
     Canvas(modifier = Modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
+        if (w <= 0f || h <= 0f) return@Canvas
         val topPad = 8.dp.toPx()
         val bottomPad = 6.dp.toPx()
         val plotH = (h - topPad - bottomPad).coerceAtLeast(1f)
@@ -316,10 +317,11 @@ private fun HaylouHeartRateCanvas(
         val minBpmScale = 80f
         val maxBpmScale = 180f
         val rangeBpm = maxBpmScale - minBpmScale
+        val maxCanvasY = (h - 2f).coerceAtLeast(2f)
 
         fun bpmToY(bpm: Float): Float {
             val ratio = (bpm - minBpmScale) / rangeBpm
-            return (topPad + plotH * (1f - ratio)).coerceIn(2f, h - 2f)
+            return (topPad + plotH * (1f - ratio)).coerceIn(2f, maxCanvasY)
         }
 
         val dottedEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f), 0f)
@@ -756,7 +758,7 @@ fun FullscreenHeartRateAnalysisDialog(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = if (effectiveSamples.size >= 2) "-$recoveryDropBpm bpm" else "--",
+                                    text = if (effectiveSamples.size >= 2 && recoveryDropBpm != null) "-$recoveryDropBpm bpm" else "--",
                                     color = Color(0xFF00E676),
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Black
@@ -905,6 +907,7 @@ fun FullscreenHeartRateAnalysisDialog(
                                                     if (effectiveSamples.isNotEmpty()) {
                                                         val ratio = (offset.x / plotWidthPx).coerceIn(0f, 1f)
                                                         scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
+                                                            .coerceIn(0, effectiveSamples.lastIndex)
                                                     }
                                                 }
                                             }
@@ -914,6 +917,7 @@ fun FullscreenHeartRateAnalysisDialog(
                                                         if (effectiveSamples.isNotEmpty()) {
                                                             val ratio = (offset.x / plotWidthPx).coerceIn(0f, 1f)
                                                             scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
+                                                                .coerceIn(0, effectiveSamples.lastIndex)
                                                         }
                                                     },
                                                     onHorizontalDrag = { change, _ ->
@@ -921,6 +925,7 @@ fun FullscreenHeartRateAnalysisDialog(
                                                         if (effectiveSamples.isNotEmpty()) {
                                                             val ratio = (change.position.x / plotWidthPx).coerceIn(0f, 1f)
                                                             scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
+                                                                .coerceIn(0, effectiveSamples.lastIndex)
                                                         }
                                                     }
                                                 )
@@ -1019,7 +1024,18 @@ fun FullscreenHeartRateAnalysisDialog(
                                 )
                             }
 
-                            coherent5Zones.forEach { zItem ->
+                            if (coherent5Zones.isEmpty() || coherent5Zones.all { it.percentage <= 0f }) {
+                                Text(
+                                    text = "Sem dados de FC",
+                                    color = secondaryText,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 16.dp)
+                                )
+                            } else coherent5Zones.forEach { zItem ->
                                 val zColor = Color(zItem.colorHex)
                                 val pctInt = zItem.percentage.roundToInt().coerceIn(0, 100)
                                 val progressFraction = if (pctInt <= 0) 0f else (pctInt / 100f).coerceIn(0f, 1f)

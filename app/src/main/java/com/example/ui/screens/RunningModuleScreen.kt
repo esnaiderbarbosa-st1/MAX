@@ -89,7 +89,6 @@ import com.example.data.model.toJsonString
 import com.example.data.model.toRecordedKmSplits
 import com.example.data.model.toHrTimelineList
 import com.example.data.model.toRoutePointItems
-import com.example.data.model.resolveWeightKg
 import com.example.data.model.safeCoerceIn
 import com.example.data.model.safeRoundToInt
 import com.example.engine.RunningBlock

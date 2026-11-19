@@ -1620,7 +1620,7 @@ fun RunningSummaryDialog(
                             totalElapsedSec = durationSec.coerceAtLeast(1),
                             totalMeasuredDistanceMeters = safeDistDouble,
                             splitIntervalKm = selectedSplitInterval,
-                            userWeightKg = userWeightKg ?: 0f
+                            userWeightKg = userWeightKg
                         )
                     }.getOrElse {
                         com.example.services.WorkoutMetricsResult(
