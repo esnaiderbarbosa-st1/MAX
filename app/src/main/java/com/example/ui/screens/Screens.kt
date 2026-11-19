@@ -9918,6 +9918,7 @@ fun CardioScreen(viewModel: MainViewModel) {
     var isCardioScanned by remember { mutableStateOf(false) }
     var selectedImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var scanErrorMessage by remember { mutableStateOf<String?>(null) }
+    val isCardioAiLoading by viewModel.isAiLoading.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val galleryLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -10101,9 +10102,10 @@ fun CardioScreen(viewModel: MainViewModel) {
                                 })
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Primary),
+                            enabled = !isCardioAiLoading,
                             modifier = Modifier.fillMaxWidth().height(48.dp)
                         ) {
-                            if (viewModel.isAiLoading.value) {
+                            if (isCardioAiLoading) {
                                 CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.Black)
                             } else {
                                 Row(

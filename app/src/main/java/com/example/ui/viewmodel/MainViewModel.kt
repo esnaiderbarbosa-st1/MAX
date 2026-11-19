@@ -4443,6 +4443,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             val durationSeconds = getInt("durationSeconds", 0)
             val minutes = if (durationSeconds > 0) (durationSeconds / 60).coerceAtLeast(1) else getInt("durationMinutes", 0)
+            val distance = getFloat("distance", 0.0f)
+
+            if (distance <= 0.0f && durationSeconds <= 0 && minutes <= 0) {
+                throw Exception("Não foi possível ler distância nem duração válidas no print de cardio.")
+            }
 
             val dateStr = getString("date", "")
             var timestamp = System.currentTimeMillis()
@@ -4468,7 +4473,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 durationMinutes = minutes,
                 calories = getInt("calories", 0),
                 date = timestamp,
-                distance = getFloat("distance", 0.0f),
+                distance = distance,
                 durationSeconds = durationSeconds,
                 avgHr = getInt("avgHr", 0),
                 steps = getInt("steps", 0),

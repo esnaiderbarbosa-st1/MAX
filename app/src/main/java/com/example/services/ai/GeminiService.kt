@@ -150,117 +150,6 @@ object GeminiService {
         return "Coach IA: Treinar com máxima performance exige dedicação! Foque em progredir cargas de forma linear (adicione +1kg a cada treino), controle a alimentação com excedente calórico leve para ganho de massa, e durma pelo menos 7-8h por noite."
     }
 
-    private fun generateDynamicBioimpedanceFallback(
-        base64Image: String,
-        profileWeight: Float,
-        profileBf: Float,
-        profileHeight: Int,
-        profileAge: Int
-    ): String {
-        val seed = base64Image.hashCode().toLong()
-        val random = java.util.Random(seed)
-        
-        val pesoDelta = (random.nextFloat() * 2.0f) - 1.0f // -1.0 to +1.0 kg variation
-        val simulatedPeso = (profileWeight + pesoDelta).coerceAtLeast(40f)
-        
-        val heightM = profileHeight / 100.0f
-        val simulatedImc = simulatedPeso / (heightM * heightM)
-        
-        val bfDelta = (random.nextFloat() * 1.6f) - 0.8f // -0.8% to +0.8% variation
-        val simulatedBf = (profileBf + bfDelta).coerceIn(5f, 50f)
-        
-        val taxaMuscular = (50f + (random.nextFloat() * 4f - 2f)).coerceIn(30f, 70f)
-        val massaMagra = simulatedPeso * (1f - (simulatedBf / 100f))
-        val gorduraSubcutanea = (simulatedBf * 0.75f + (random.nextFloat() * 2f - 1f)).coerceIn(5f, 35f)
-        val gorduraVisceral = (profileBf / 3f + (random.nextFloat() * 2f - 1f)).coerceIn(1f, 20f)
-        val aguaCorporal = (60f - simulatedBf * 0.4f + (random.nextFloat() * 2f - 1f)).coerceIn(40f, 75f)
-        val massaMuscularEsqueletica = (massaMagra * 0.55f + (random.nextFloat() * 2f - 1f)).coerceIn(15f, 60f)
-        val massaMuscular = (massaMagra * 0.82f + (random.nextFloat() * 2f - 1f)).coerceIn(20f, 80f)
-        val massaOssea = (3.0f + (random.nextFloat() * 0.6f - 0.3f)).coerceIn(1.5f, 5.0f)
-        val proteina = (18f + (random.nextFloat() * 2f - 1.0f)).coerceIn(10f, 25f)
-        val tmb = (1600 + (simulatedPeso * 10).toInt() + (random.nextInt(150) - 75)).coerceAtLeast(1000)
-        val idadeMetabolica = (profileAge + random.nextInt(3) - 1).coerceAtLeast(12)
-        
-        val todayStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
-        
-        return String.format(
-            java.util.Locale.US,
-            """
-            {
-                "peso": %.1f,
-                "imc": %.1f,
-                "percentualGordura": %.1f,
-                "taxaMuscular": %.1f,
-                "massaMagra": %.1f,
-                "gorduraSubcutanea": %.1f,
-                "gorduraVisceral": %.1f,
-                "aguaCorporal": %.1f,
-                "massaMuscularEsqueletica": %.1f,
-                "massaMuscular": %.1f,
-                "massaOssea": %.1f,
-                "proteina": %.1f,
-                "tmb": %d,
-                "idadeMetabolica": %d,
-                "dateStr": "%s"
-            }
-            """.trimIndent(),
-            simulatedPeso, simulatedImc, simulatedBf, taxaMuscular, massaMagra,
-            gorduraSubcutanea, gorduraVisceral, aguaCorporal, massaMuscularEsqueletica,
-            massaMuscular, massaOssea, proteina, tmb, idadeMetabolica, todayStr
-        )
-    }
-
-    private fun generateDynamicCardioFallback(base64Image: String): String {
-        val seed = base64Image.hashCode().toLong()
-        val random = java.util.Random(seed)
-        
-        val isCycling = seed % 3 == 0L
-        val isWalking = seed % 3 == 1L
-        val type = if (isCycling) "Bicicleta" else if (isWalking) "Caminhada" else "Corrida"
-        
-        val durationMin = 20 + random.nextInt(35) // 20 to 55 minutes
-        val durationSeconds = durationMin * 60 + random.nextInt(60)
-        
-        val avgHr = if (isCycling) 115 + random.nextInt(25) else if (isWalking) 90 + random.nextInt(20) else 135 + random.nextInt(25)
-        val steps = if (isCycling) 0 else (durationMin * (90 + random.nextInt(30)))
-        
-        val speedKmh = if (isCycling) 16f + random.nextFloat() * 10f else if (isWalking) 4.5f + random.nextFloat() * 1.5f else 8.5f + random.nextFloat() * 3.5f
-        val distance = (speedKmh * (durationMin / 60.0f))
-        
-        val calories = (durationMin * (if (isCycling) 6 + random.nextInt(4) else if (isWalking) 4 + random.nextInt(3) else 8 + random.nextInt(5)))
-        
-        val paceMinPart = (60 / speedKmh).toInt()
-        val paceSecPart = (((60 / speedKmh) - paceMinPart) * 60).toInt()
-        val pace = if (isCycling) "" else String.format(java.util.Locale.US, "%d:%02d", paceMinPart, paceSecPart)
-        
-        val fatBurnZone = (durationMin * 0.45f + random.nextInt(4)).coerceAtLeast(0f)
-        val anaerobicZone = (durationMin * 0.25f + random.nextInt(3)).coerceAtLeast(0f)
-        val limitZone = (durationMin * 0.15f + random.nextInt(2)).coerceAtLeast(0f)
-        
-        val todayStr = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
-        
-        return String.format(
-            java.util.Locale.US,
-            """
-            {
-                "distance": %.2f,
-                "durationSeconds": %d,
-                "calories": %d,
-                "avgHr": %d,
-                "steps": %d,
-                "pace": "%s",
-                "fatBurnZone": %.1f,
-                "anaerobicZone": %.1f,
-                "limitZone": %.1f,
-                "date": "%s",
-                "type": "%s"
-            }
-            """.trimIndent(),
-            distance, durationSeconds, calories, avgHr, steps, pace,
-            fatBurnZone, anaerobicZone, limitZone, todayStr, type
-        )
-    }
-
     suspend fun extractBioimpedanceFromImage(
         base64Image: String,
         profileWeight: Float,
@@ -271,8 +160,8 @@ object GeminiService {
         val apiKey = BuildConfig.GEMINI_API_KEY_1
         
         if (apiKey.isEmpty() || apiKey.contains("MY_GEMINI") || apiKey.contains("placeholder")) {
-            android.util.Log.w("GeminiService", "Chave API do Gemini ausente para bioimpedância, usando fallback offline")
-            return@withContext generateDynamicBioimpedanceFallback(base64Image, profileWeight, profileBf, profileHeight, profileAge)
+            android.util.Log.w("GeminiService", "Chave API do Gemini ausente para bioimpedância")
+            throw Exception("Chave da API Gemini não configurada. Não foi possível ler o print.")
         }
 
         val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
@@ -371,8 +260,8 @@ object GeminiService {
                 return@withContext parsed.trim()
             }
         } catch (e: Exception) {
-            android.util.Log.e("GeminiService", "Erro no escaneamento de bioimpedância, usando fallback offline", e)
-            return@withContext generateDynamicBioimpedanceFallback(base64Image, profileWeight, profileBf, profileHeight, profileAge)
+            android.util.Log.e("GeminiService", "Erro no escaneamento de bioimpedância", e)
+            throw Exception(e.message ?: "Erro ao ler o print de bioimpedância pela API Gemini.", e)
         }
     }
 
@@ -380,8 +269,8 @@ object GeminiService {
         val apiKey = BuildConfig.GEMINI_API_KEY_1
         
         if (apiKey.isEmpty() || apiKey.contains("MY_GEMINI") || apiKey.contains("placeholder")) {
-            android.util.Log.w("GeminiService", "Chave API do Gemini ausente para cardio, usando fallback offline")
-            return@withContext generateDynamicCardioFallback(base64Image)
+            android.util.Log.w("GeminiService", "Chave API do Gemini ausente para cardio")
+            throw Exception("Chave da API Gemini não configurada. Não foi possível ler o print.")
         }
 
         val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
@@ -426,8 +315,8 @@ object GeminiService {
                 return@withContext parsed.trim()
             }
         } catch (e: Exception) {
-            android.util.Log.e("GeminiService", "Erro no escaneamento de atividade cardio, usando fallback offline", e)
-            return@withContext generateDynamicCardioFallback(base64Image)
+            android.util.Log.e("GeminiService", "Erro no escaneamento de atividade cardio", e)
+            throw Exception(e.message ?: "Erro ao ler o print de cardio pela API Gemini.", e)
         }
     }
 }
