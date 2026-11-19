@@ -1,0 +1,1265 @@
+package com.example.ui.components
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.data.model.RecordedKmSplit
+import com.example.data.model.RoutePointItem
+import com.example.data.model.RunPhysiologyDossier
+import com.example.data.model.calculateEffectiveMaxHr
+import com.example.data.model.computeCoherent5ZoneDistribution
+import com.example.ui.theme.RunColors
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.exp
+import kotlin.math.roundToInt
+
+data class HrZoneDefinition(
+    val name: String,
+    val rangeText: String,
+    val minBpm: Int,
+    val maxBpm: Int,
+    val color: Color
+)
+
+/**
+ * 6 Zonas Fisiológicas de Esforço (inspiradas no Haylou Fun):
+ * 1. Recuperação (< 98 bpm) - Azul Suave (#60A5FA)
+ * 2. Aquecimento (98–109 bpm) - Ciano (#38BDF8)
+ * 3. Queima de Gordura (110–130 bpm) - Verde (#22C55E)
+ * 4. Aeróbico (131–145 bpm) - Amarelo (#FACC15)
+ * 5. Anaeróbico (146–160 bpm) - Laranja (#FF8A00)
+ * 6. Limite (> 160 bpm) - Vermelho-Alaranjado (#FF453A)
+ */
+val HR_ZONES = listOf(
+    HrZoneDefinition("Recuperação", "< 98 bpm", 0, 97, Color(0xFF60A5FA)),
+    HrZoneDefinition("Aquecimento", "98–109 bpm", 98, 109, Color(0xFF38BDF8)),
+    HrZoneDefinition("Queima de Gordura", "110–130 bpm", 110, 130, Color(0xFF22C55E)),
+    HrZoneDefinition("Aeróbico", "131–145 bpm", 131, 145, Color(0xFFFACC15)),
+    HrZoneDefinition("Anaeróbico", "146–160 bpm", 146, 160, Color(0xFFFF8A00)),
+    HrZoneDefinition("Limite", "> 160 bpm", 161, 240, Color(0xFFFF453A))
+)
+
+/**
+ * Retorna (corDeFundo, corDoTexto) para badges de zona, garantindo alto contraste
+ * especialmente na zona "Aeróbico" (amarelo claro com texto escuro #8D4E00 / #795548).
+ */
+fun getZoneBadgeColors(zone: HrZoneDefinition, isLightMode: Boolean): Pair<Color, Color> {
+    return if (zone.name == "Aeróbico") {
+        val bg = if (isLightMode) Color(0xFFFEF08A) else Color(0xFFFFF59D)
+        val fg = Color(0xFF795548)
+        bg to fg
+    } else {
+        val bg = zone.color.copy(alpha = if (isLightMode) 0.16f else 0.20f)
+        val fg = zone.color
+        bg to fg
+    }
+}
+
+fun getHrZoneForBpm(bpm: Int): HrZoneDefinition {
+    return when {
+        bpm < 98 -> HR_ZONES[0]
+        bpm <= 109 -> HR_ZONES[1]
+        bpm <= 130 -> HR_ZONES[2]
+        bpm <= 145 -> HR_ZONES[3]
+        bpm <= 160 -> HR_ZONES[4]
+        else -> HR_ZONES[5]
+    }
+}
+
+fun getHrColorForBpm(bpm: Float): Color {
+    return when {
+        bpm < 98f -> Color(0xFF60A5FA)
+        bpm <= 109f -> Color(0xFF38BDF8)
+        bpm <= 130f -> Color(0xFF22C55E)
+        bpm <= 145f -> Color(0xFFFACC15)
+        bpm <= 160f -> Color(0xFFFF8A00)
+        else -> Color(0xFFFF453A)
+    }
+}
+
+/**
+ * Gera ou interpola amostras de frequência cardíaca respeitando o comportamento fisiológico real
+ * (estilo Haylou Fun): subida inicial nos primeiros ~3 minutos a partir de ~95 bpm, entrada no platô
+ * de esforço mantendo os batimentos predominantemente na faixa de 146–172 bpm, com quedas suaves de
+ * ~15–20 bpm apenas nos intervalos reais de caminhada e micro-variações orgânicas (sem ondas senoidais
+ * repetitivas de efeito mola).
+ */
+fun generateRealisticHrSamples(
+    sessionId: String?,
+    avgHr: Int?,
+    maxHr: Int?,
+    durationSec: Int = 1800,
+    recordedSamples: List<Int> = emptyList(),
+    splits: List<RecordedKmSplit> = emptyList()
+): List<Int> {
+    val cleanRecorded = recordedSamples.filter { it in 45..225 }
+    val seed = (sessionId?.hashCode()?.toLong() ?: 98765L) +
+        (avgHr ?: 148) * 37L +
+        (maxHr ?: 176) * 19L +
+        durationSec * 7L
+    val random = java.util.Random(seed)
+
+    if (cleanRecorded.size >= 24) {
+        val enriched = IntArray(cleanRecorded.size)
+        for (i in cleanRecorded.indices) {
+            val raw = cleanRecorded[i]
+            val prev = if (i > 0) cleanRecorded[i - 1] else raw
+            val next = if (i < cleanRecorded.lastIndex) cleanRecorded[i + 1] else raw
+            if (raw == prev && raw == next && i > 0 && i < cleanRecorded.lastIndex) {
+                val micro = ((random.nextFloat() - 0.5f) * 2.4f).roundToInt()
+                enriched[i] = (raw + micro).coerceIn(80, maxHr ?: 205)
+            } else {
+                enriched[i] = raw
+            }
+        }
+        return enriched.toList()
+    }
+
+    val safeDuration = durationSec.coerceAtLeast(300)
+    val targetPoints = (safeDuration / 10).coerceIn(90, 150)
+    val peakHr = (maxHr ?: 176).coerceIn(150, 198)
+    val targetAvg = (avgHr ?: 148).coerceIn(120, (peakHr - 8).coerceAtLeast(126))
+
+    if (cleanRecorded.size in 2..23) {
+        val result = IntArray(targetPoints)
+        var driftNoise = 0f
+        for (i in 0 until targetPoints) {
+            val pos = i.toFloat() / (targetPoints - 1).coerceAtLeast(1) * (cleanRecorded.size - 1)
+            val idx0 = pos.toInt().coerceIn(0, cleanRecorded.size - 1)
+            val idx1 = (idx0 + 1).coerceIn(0, cleanRecorded.size - 1)
+            val frac = pos - idx0
+            val base = cleanRecorded[idx0] + (cleanRecorded[idx1] - cleanRecorded[idx0]) * frac
+            driftNoise = (driftNoise * 0.65f + (random.nextFloat() - 0.5f) * 2.8f).coerceIn(-3.5f, 3.5f)
+            result[i] = (base + driftNoise).roundToInt().coerceIn(84, peakHr)
+        }
+        return result.toList()
+    }
+
+    // Subida inicial nos primeiros ~3 minutos (180s) a partir de ~93-96 bpm
+    val startHr = (93 + random.nextInt(4)).toFloat()
+    val warmupFraction = (180f / safeDuration.toFloat()).coerceIn(0.09f, 0.15f)
+    val cooldownStartFraction = 0.94f
+
+    // Platô de esforço sustentado: mantém os batimentos predominantemente em 146–172 bpm
+    val plateauStartHr = (targetAvg + 2f).coerceIn(145f, (peakHr - 16f).coerceAtLeast(146f))
+    val plateauEndHr = (plateauStartHr + 13f).coerceIn(plateauStartHr + 6f, (peakHr - 5f).coerceAtLeast(158f))
+
+    // Identifica intervalos reais de caminhada via splits, ou cria apenas 2-3 recuperações espaçadas
+    data class WalkDipWindow(val centerFrac: Float, val halfWidth: Float, val dropBpm: Float)
+    val walkWindows = mutableListOf<WalkDipWindow>()
+    val totalSplitsDur = splits.sumOf { it.durationSec }
+    if (splits.isNotEmpty() && totalSplitsDur > 0 && splits.any { it.phaseTag == "WALK" }) {
+        var accSec = 0
+        for (sp in splits) {
+            val startF = accSec.toFloat() / totalSplitsDur.toFloat()
+            val endF = (accSec + sp.durationSec).toFloat() / totalSplitsDur.toFloat()
+            accSec += sp.durationSec
+            if (sp.phaseTag == "WALK" && startF > warmupFraction && endF < cooldownStartFraction) {
+                val c = (startF + endF) / 2f
+                val hw = ((endF - startF) * 0.55f).coerceIn(0.022f, 0.055f)
+                val drop = 15f + random.nextFloat() * 5f
+                walkWindows.add(WalkDipWindow(c, hw, drop))
+            }
+        }
+    }
+    if (walkWindows.isEmpty()) {
+        // Apenas 2 ou 3 quedas suaves de recuperação (~16-20 bpm) bem espaçadas ao longo da sessão
+        val dipCount = if (safeDuration >= 1200) 3 else 2
+        val dipCenters = if (dipCount == 3) {
+            floatArrayOf(0.33f, 0.58f, 0.81f)
+        } else {
+            floatArrayOf(0.42f, 0.74f)
+        }
+        for (c in dipCenters) {
+            val jitter = (random.nextFloat() - 0.5f) * 0.02f
+            val drop = 16f + random.nextFloat() * 4f // 16..20 bpm
+            walkWindows.add(WalkDipWindow((c + jitter).coerceIn(0.24f, 0.86f), 0.032f, drop))
+        }
+    }
+
+    // Pico máximo da sessão ocorre no terço médio-final de um bloco de tiro (longe das caminhadas)
+    val peakFrac = 0.68f + (random.nextFloat() - 0.5f) * 0.06f
+
+    val samples = FloatArray(targetPoints)
+    var current = startHr
+    var organicWalk = 0f
+
+    for (i in 0 until targetPoints) {
+        val progress = i.toFloat() / (targetPoints - 1).coerceAtLeast(1)
+
+        val baseEnvelope = when {
+            progress < warmupFraction -> {
+                // Curva fisiológica de subida inicial (0 a ~3 min): 95 -> ~147 bpm
+                val p = (progress / warmupFraction).coerceIn(0f, 1f)
+                val rise = 1f - exp(-3.4f * p)
+                startHr + (plateauStartHr - startHr) * (rise / (1f - exp(-3.4f)))
+            }
+            progress <= cooldownStartFraction -> {
+                // Platô sustentado de esforço com leve deriva cardiovascular (146..168 bpm)
+                val p = (progress - warmupFraction) / (cooldownStartFraction - warmupFraction)
+                val slowDrift = p * (plateauEndHr - plateauStartHr)
+                // Pequenas elevações suaves de esforço durante os blocos de tiro (+3 a +5 bpm)
+                val sprintPush = if (p in 0.15f..0.88f) 3.2f else 1.0f
+                plateauStartHr + slowDrift + sprintPush
+            }
+            else -> {
+                // Desaquecimento final suave nos últimos ~1.5 min
+                val p = (progress - cooldownStartFraction) / (1f - cooldownStartFraction).coerceAtLeast(0.01f)
+                plateauEndHr - p * 16f
+            }
+        }
+
+        // Quedas fisiológicas suaves apenas nas janelas de caminhada
+        var walkDipMod = 0f
+        for (w in walkWindows) {
+            val dist = (progress - w.centerFrac) / w.halfWidth
+            if (abs(dist) < 2.6f) {
+                walkDipMod -= w.dropBpm * exp(-(dist * dist) * 0.85f)
+            }
+        }
+
+        // Impulso do tiro mais forte (PR) levando ao BPM Máximo real sem criar ondas artificiais
+        val distToPeak = (progress - peakFrac) / 0.042f
+        val peakBoost = if (abs(distToPeak) < 2.5f) {
+            val needed = (peakHr - (baseEnvelope + walkDipMod)).coerceAtLeast(4f)
+            needed * exp(-(distToPeak * distToPeak) * 0.9f)
+        } else 0f
+
+        // Micro-variação orgânica não-periódica (random walk suave, sem seno/cosseno)
+        organicWalk = (organicWalk * 0.55f + (random.nextFloat() - 0.495f) * 2.9f).coerceIn(-3.2f, 3.2f)
+
+        val rawTarget = baseEnvelope + walkDipMod + peakBoost + organicWalk
+        val alpha = if (rawTarget > current) 0.52f else 0.42f
+        current += (rawTarget - current) * alpha
+        samples[i] = current.coerceIn(startHr - 2f, peakHr.toFloat())
+    }
+
+    samples[0] = startHr
+    if (targetPoints > 2) {
+        samples[1] = (startHr + 4f).coerceAtMost(104f)
+    }
+
+    // Garante que o pico máximo exato (maxHr) seja atingido no ponto de maior esforço
+    val peakIdx = (peakFrac * (targetPoints - 1)).roundToInt().coerceIn(targetPoints / 3, targetPoints - 6)
+    samples[peakIdx] = peakHr.toFloat()
+    if (peakIdx - 1 >= 0) samples[peakIdx - 1] = (peakHr - 2).toFloat()
+    if (peakIdx + 1 < targetPoints) samples[peakIdx + 1] = (peakHr - 3).toFloat()
+
+    return samples.map { it.roundToInt().coerceIn(85, peakHr) }
+}
+
+/**
+ * Formata os marcos da régua de tempo horizontal (Eixo X).
+ */
+fun buildTimeAxisLabels(durationSec: Int, tickCount: Int = 6): List<String> {
+    val safeDuration = durationSec.coerceAtLeast(60)
+    val totalMinutes = safeDuration / 60f
+    if (tickCount <= 2) {
+        val endMin = totalMinutes.roundToInt().coerceAtLeast(1)
+        return listOf("0", "${endMin}min")
+    }
+    return (0 until tickCount).map { idx ->
+        val fraction = idx.toFloat() / (tickCount - 1).coerceAtLeast(1)
+        val secAtTick = (safeDuration * fraction).roundToInt()
+        if (idx == 0) {
+            "0m"
+        } else if (totalMinutes >= 5f) {
+            val minRounded = (secAtTick / 60f).roundToInt()
+            "${minRounded}m"
+        } else {
+            val m = secAtTick / 60
+            val s = secAtTick % 60
+            String.format(Locale.US, "%d:%02d", m, s)
+        }
+    }
+}
+
+/**
+ * Calcula a queda média de BPM nas caminhadas/recuperações entre tiros.
+ */
+private fun calculateAverageWalkRecoveryDropBpm(
+    samples: List<Int>,
+    splits: List<RecordedKmSplit>
+): Int {
+    // 1. Tenta via splits de corrida vs caminhada se disponíveis
+    val runHrs = splits.filter { it.phaseTag == "RUN" || it.phaseTag == "PR" }.mapNotNull { it.avgHr }
+    val walkHrs = splits.filter { it.phaseTag == "WALK" }.mapNotNull { it.avgHr }
+    if (runHrs.isNotEmpty() && walkHrs.isNotEmpty()) {
+        val drop = (runHrs.average() - walkHrs.average()).roundToInt()
+        if (drop > 2) return drop
+    }
+
+    // 2. Detecta picos locais seguidos de vales de recuperação na curva de amostras
+    if (samples.size < 6) return 14
+    val drops = mutableListOf<Int>()
+    val window = (samples.size / 8).coerceIn(3, 12)
+    var i = 2
+    while (i < samples.size - 2) {
+        val current = samples[i]
+        val isLocalPeak = current >= samples[i - 1] && current >= samples[i + 1] && current >= 132
+        if (isLocalPeak) {
+            val endSearch = (i + window).coerceAtMost(samples.lastIndex)
+            var minAfter = current
+            for (j in (i + 1)..endSearch) {
+                if (samples[j] < minAfter) minAfter = samples[j]
+            }
+            val drop = current - minAfter
+            if (drop >= 6) {
+                drops.add(drop)
+                i += (window / 2).coerceAtLeast(2)
+                continue
+            }
+        }
+        i++
+    }
+    return if (drops.isNotEmpty()) {
+        drops.average().roundToInt().coerceIn(8, 35)
+    } else {
+        val maxVal = samples.maxOrNull() ?: 170
+        val avgVal = samples.average().roundToInt()
+        ((maxVal - avgVal) * 0.65f).roundToInt().coerceIn(10, 26)
+    }
+}
+
+/**
+ * Resolve a Fase/Bloco da Corrida e o Pace Instantâneo para um dado progresso (0f..1f) no gráfico.
+ */
+private fun resolvePhaseAndPaceAtFraction(
+    fraction: Float,
+    bpmAtPoint: Int,
+    avgHr: Int,
+    avgPaceSecPerKm: Int,
+    routePointItems: List<RoutePointItem>,
+    splits: List<RecordedKmSplit>
+): Pair<String, String> {
+    val clamped = fraction.coerceIn(0f, 1f)
+
+    // 1. Tenta extrair de routePointItems (contém phase, blockIndex e speed real)
+    if (routePointItems.isNotEmpty()) {
+        val idx = (clamped * (routePointItems.size - 1)).roundToInt().coerceIn(0, routePointItems.lastIndex)
+        val pt = routePointItems[idx]
+        // Conta qual o número do Tiro ou Caminhada até este ponto
+        var sprintNum = 1
+        var walkNum = 1
+        var lastPhase = ""
+        for (k in 0..idx) {
+            val p = routePointItems[k].phase
+            if (p != lastPhase) {
+                if ((p == "RUN" || p == "PR") && lastPhase.isNotEmpty() && lastPhase != "RUN" && lastPhase != "PR") {
+                    sprintNum++
+                } else if (p == "WALK" && lastPhase.isNotEmpty() && lastPhase != "WALK") {
+                    walkNum++
+                }
+                lastPhase = p
+            }
+        }
+        val phaseLabel = when (pt.phase.uppercase(Locale.US)) {
+            "WARMUP" -> "Aquecimento"
+            "COOL_DOWN", "COOLDOWN" -> "Desaquecimento"
+            "WALK" -> "Caminhada $walkNum"
+            "PR" -> "Tiro $sprintNum (PR ⚡)"
+            else -> if (sprintNum > 1 || routePointItems.any { it.phase == "WALK" }) "Tiro $sprintNum" else "Corrida Principal"
+        }
+
+        val speedMps = pt.speed ?: 0f
+        val paceSec = if (speedMps > 0.6f) {
+            (1000f / speedMps).roundToInt().coerceIn(150, 950)
+        } else if (pt.phase.equals("WALK", ignoreCase = true)) {
+            570 // ~9'30"/km caminhada
+        } else {
+            val basePace = if (avgPaceSecPerKm > 0) avgPaceSecPerKm else 340
+            val hrRatio = (avgHr.toFloat() / bpmAtPoint.coerceAtLeast(90).toFloat()).coerceIn(0.78f, 1.25f)
+            (basePace * hrRatio).roundToInt().coerceIn(175, 780)
+        }
+        val pMin = paceSec / 60
+        val pSec = paceSec % 60
+        return phaseLabel to String.format(Locale.US, "%d'%02d\"/km", pMin, pSec)
+    }
+
+    // 2. Fallback via splits se disponíveis
+    if (splits.isNotEmpty()) {
+        val totalSplitDur = splits.sumOf { it.durationSec }.coerceAtLeast(1)
+        val targetSec = (clamped * totalSplitDur).roundToInt()
+        var acc = 0
+        var runCount = 0
+        var walkCount = 0
+        for (sp in splits) {
+            val isWalk = sp.phaseTag == "WALK" || sp.splitLabel.contains("Caminh", ignoreCase = true)
+            val isWarm = sp.phaseTag == "WARMUP" || sp.splitLabel.contains("Aquec", ignoreCase = true)
+            val isCool = sp.phaseTag == "COOL_DOWN" || sp.splitLabel.contains("Desaquec", ignoreCase = true)
+            if (!isWalk && !isWarm && !isCool) runCount++
+            if (isWalk) walkCount++
+            acc += sp.durationSec
+            if (targetSec <= acc || sp == splits.last()) {
+                val label = when {
+                    isWarm -> "Aquecimento"
+                    isCool -> "Desaquecimento"
+                    isWalk -> "Caminhada ${walkCount.coerceAtLeast(1)}"
+                    else -> "Tiro ${runCount.coerceAtLeast(1)}"
+                }
+                val pSec = sp.paceSecPerKm.takeIf { it > 0 } ?: avgPaceSecPerKm.takeIf { it > 0 } ?: 330
+                return label to String.format(Locale.US, "%d'%02d\"/km", pSec / 60, pSec % 60)
+            }
+        }
+    }
+
+    // 3. Fallback fisiológico baseado na janela temporal e FC
+    val phaseLabel = when {
+        clamped < 0.10f -> "Aquecimento"
+        clamped > 0.92f -> "Desaquecimento"
+        bpmAtPoint < avgHr - 8 -> "Caminhada / Recup."
+        else -> {
+            val estBlock = ((clamped - 0.10f) / 0.14f).toInt().coerceAtLeast(0) + 1
+            "Tiro $estBlock"
+        }
+    }
+    val basePace = if (avgPaceSecPerKm > 0) avgPaceSecPerKm else 330
+    val hrFactor = (avgHr.toFloat() / bpmAtPoint.coerceAtLeast(90).toFloat()).coerceIn(0.80f, 1.30f)
+    val estPaceSec = (basePace * hrFactor).roundToInt().coerceIn(180, 750)
+    return phaseLabel to String.format(Locale.US, "%d'%02d\"/km", estPaceSec / 60, estPaceSec % 60)
+}
+
+@Composable
+private fun HaylouHeartRateCanvas(
+    samples: List<Int>,
+    isLightMode: Boolean,
+    activeIdx: Int?,
+    strokeWidthDp: Float = 2.4f
+) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val w = size.width
+        val h = size.height
+        val topPad = 8.dp.toPx()
+        val bottomPad = 6.dp.toPx()
+        val plotH = (h - topPad - bottomPad).coerceAtLeast(1f)
+
+        val minBpmScale = 80f
+        val maxBpmScale = 180f
+        val rangeBpm = maxBpmScale - minBpmScale
+
+        fun bpmToY(bpm: Float): Float {
+            val ratio = (bpm - minBpmScale) / rangeBpm
+            return (topPad + plotH * (1f - ratio)).coerceIn(2f, h - 2f)
+        }
+
+        val dottedEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 5f), 0f)
+        val gridColor = if (isLightMode) Color(0xFFCBD5E1) else Color.White.copy(alpha = 0.16f)
+        val baseAxisColor = if (isLightMode) Color(0xFF94A3B8) else Color.White.copy(alpha = 0.30f)
+
+        val dottedBpms = listOf(180f, 155f, 130f, 105f)
+        dottedBpms.forEach { guide ->
+            val y = bpmToY(guide)
+            drawLine(
+                color = gridColor,
+                start = Offset(0f, y),
+                end = Offset(w, y),
+                strokeWidth = 1.dp.toPx(),
+                pathEffect = dottedEffect
+            )
+        }
+
+        val y80 = bpmToY(80f)
+        drawLine(
+            color = baseAxisColor,
+            start = Offset(0f, y80),
+            end = Offset(w, y80),
+            strokeWidth = 1.dp.toPx()
+        )
+
+        if (samples.size >= 2) {
+            val stepX = w / (samples.size - 1).coerceAtLeast(1)
+            val linePath = Path()
+
+            val pts = samples.mapIndexed { idx, bpm ->
+                Offset(x = idx * stepX, y = bpmToY(bpm.toFloat()))
+            }
+
+            linePath.moveTo(pts.first().x, pts.first().y)
+            for (i in 0 until pts.size - 1) {
+                val p0 = pts[i]
+                val p1 = pts[i + 1]
+                val midX = (p0.x + p1.x) / 2f
+                val midY = (p0.y + p1.y) / 2f
+                if (i == 0) {
+                    linePath.lineTo(midX, midY)
+                } else {
+                    linePath.quadraticTo(p0.x, p0.y, midX, midY)
+                }
+            }
+            linePath.lineTo(pts.last().x, pts.last().y)
+
+            val stop158 = (bpmToY(158f) / h).coerceIn(0.05f, 0.90f)
+            val stop142 = (bpmToY(142f) / h).coerceIn(stop158 + 0.03f, 0.93f)
+            val stop125 = (bpmToY(125f) / h).coerceIn(stop142 + 0.03f, 0.96f)
+            val stop105 = (bpmToY(105f) / h).coerceIn(stop125 + 0.03f, 0.99f)
+
+            val zoneStrokeBrush = Brush.verticalGradient(
+                0.0f to Color(0xFFFF453A),
+                stop158 to Color(0xFFFF5252),
+                stop142 to Color(0xFFFF8A00),
+                stop125 to Color(0xFFFACC15),
+                stop105 to Color(0xFF22C55E),
+                1.0f to Color(0xFF38BDF8)
+            )
+
+            drawPath(
+                path = linePath,
+                brush = zoneStrokeBrush,
+                style = Stroke(
+                    width = strokeWidthDp.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+            )
+
+            if (activeIdx != null && activeIdx in pts.indices) {
+                val scrubPt = pts[activeIdx]
+                val scrubBpm = samples[activeIdx].toFloat()
+                val dotColor = getHrColorForBpm(scrubBpm)
+
+                drawLine(
+                    color = if (isLightMode) Color(0xFF334155) else Color.White.copy(alpha = 0.85f),
+                    start = Offset(scrubPt.x, topPad),
+                    end = Offset(scrubPt.x, y80),
+                    strokeWidth = 1.5.dp.toPx(),
+                    pathEffect = dottedEffect
+                )
+                drawCircle(
+                    color = dotColor.copy(alpha = 0.28f),
+                    radius = 10.dp.toPx(),
+                    center = scrubPt
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = 5.5.dp.toPx(),
+                    center = scrubPt
+                )
+                drawCircle(
+                    color = dotColor,
+                    radius = 3.8.dp.toPx(),
+                    center = scrubPt
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Sobrecarga direta para abrir a Tela Cheia de Análise Cardíaca da Sessão a partir do Resumo Pós-Treino
+ * ou Dossiê do Histórico (`RunPhysiologyDossier`).
+ */
+@Composable
+fun FullscreenSessionHeartRateModal(
+    dossier: RunPhysiologyDossier,
+    athleteAge: Int = 50,
+    hrSamples: List<Int> = emptyList(),
+    routePointItems: List<RoutePointItem> = emptyList(),
+    splits: List<RecordedKmSplit> = emptyList(),
+    weekNumber: Int = 1,
+    dayNumber: Int = 1,
+    isLightMode: Boolean = false,
+    onDismiss: () -> Unit
+) {
+    val combinedSamples = remember(hrSamples, dossier.telemetrySamples) {
+        val raw = hrSamples.filter { it in 45..240 }
+        if (raw.size >= 8) raw else dossier.telemetrySamples.map { it.heartRateBpm }.filter { it in 45..240 }
+    }
+    val effectiveSamples = remember(combinedSamples, dossier.avgHeartRateBpm, dossier.maxHeartRateBpm, dossier.durationSeconds, splits) {
+        generateRealisticHrSamples(
+            sessionId = dossier.formattedDateTime,
+            avgHr = dossier.avgHeartRateBpm,
+            maxHr = dossier.maxHeartRateBpm,
+            durationSec = dossier.durationSeconds,
+            recordedSamples = combinedSamples,
+            splits = splits
+        )
+    }
+    val calibratedMaxHr = remember(athleteAge, dossier.maxHeartRateBpm, dossier.effectiveMaxHeartRateBpm) {
+        val baseCal = maxOf(
+            dossier.effectiveMaxHeartRateBpm,
+            calculateEffectiveMaxHr(ageYears = athleteAge, sessionMaxHrBpm = dossier.maxHeartRateBpm)
+        )
+        if (baseCal <= dossier.maxHeartRateBpm) dossier.maxHeartRateBpm + 4 else baseCal
+    }
+
+    FullscreenHeartRateAnalysisDialog(
+        avgHr = dossier.avgHeartRateBpm,
+        maxHr = dossier.maxHeartRateBpm,
+        effectiveSamples = effectiveSamples,
+        durationSec = dossier.durationSeconds,
+        distanceMeters = (dossier.distanceKm * 1000f).roundToInt(),
+        weekNumber = weekNumber,
+        dayNumber = dayNumber,
+        avgPaceSecPerKm = dossier.avgPaceSecPerKm,
+        routePointItems = routePointItems,
+        splits = splits,
+        zoneStats = emptyList(),
+        isLightMode = isLightMode,
+        athleteAge = athleteAge,
+        calibratedMaxHrOverride = calibratedMaxHr,
+        onDismiss = onDismiss
+    )
+}
+
+/**
+ * MODAL / TELA DEDICADA EM TELA CHEIA: "ANÁLISE CARDÍACA DA SESSÃO"
+ * Exclusivo para o Resumo Pós-Treino e Dossiê Histórico (separado do Monitor Ao Vivo BLE).
+ * Possui cabeçalho fixo com botão [ X ], scroll vertical com navigationBarsPadding(),
+ * 3 KPIs (Média Sessão | Pico Sessão | FC Máx Calibrada) + Recuperação, Gráfico Interativo
+ * com scrubbing e distribuição real de tempo/percentual nas 5 Zonas (Z1–Z5).
+ */
+@Composable
+fun FullscreenHeartRateAnalysisDialog(
+    avgHr: Int,
+    maxHr: Int,
+    effectiveSamples: List<Int>,
+    durationSec: Int,
+    distanceMeters: Int,
+    weekNumber: Int,
+    dayNumber: Int,
+    avgPaceSecPerKm: Int,
+    routePointItems: List<RoutePointItem>,
+    splits: List<RecordedKmSplit>,
+    zoneStats: List<Triple<HrZoneDefinition, Float, Int>> = emptyList(),
+    isLightMode: Boolean,
+    athleteAge: Int = 50,
+    calibratedMaxHrOverride: Int? = null,
+    onDismiss: () -> Unit
+) {
+    val ptBr = remember { Locale("pt", "BR") }
+    val bgColor = if (isLightMode) Color(0xFFF8FAFC) else Color(0xFF0D0F14)
+    val cardColor = if (isLightMode) Color.White else Color(0xFF151922)
+    val cardBorder = if (isLightMode) Color(0xFFE2E8F0) else Color(0xFF232A3B)
+    val primaryText = if (isLightMode) Color(0xFF0F172A) else Color(0xFFF8FAFC)
+    val secondaryText = if (isLightMode) Color(0xFF64748B) else Color(0xFF94A3B8)
+
+    val calibratedMaxHr = remember(calibratedMaxHrOverride, athleteAge, maxHr) {
+        val rawCal = calibratedMaxHrOverride ?: calculateEffectiveMaxHr(
+            ageYears = athleteAge,
+            sessionMaxHrBpm = maxHr,
+            historicalPeakHrBpm = maxHr
+        )
+        // Nunca duplica o Pico da Sessão na 3ª coluna: FC Máx Calibrada do Perfil é sempre o teto fisiológico
+        if (rawCal <= maxHr && maxHr > 0) maxOf(maxHr + 4, 185) else rawCal
+    }
+
+    val coherent5Zones = remember(effectiveSamples, avgHr, maxHr, calibratedMaxHr, durationSec) {
+        computeCoherent5ZoneDistribution(
+            hrSamples = effectiveSamples,
+            avgBpm = avgHr,
+            maxBpm = maxHr,
+            effectiveMaxHr = calibratedMaxHr,
+            durationSeconds = durationSec.coerceAtLeast(60)
+        )
+    }
+
+    val recoveryDropBpm = remember(effectiveSamples, splits) {
+        calculateAverageWalkRecoveryDropBpm(effectiveSamples, splits)
+    }
+
+    var scrubbedIndex by remember(effectiveSamples) {
+        mutableStateOf<Int?>(if (effectiveSamples.isNotEmpty()) effectiveSamples.size / 2 else null)
+    }
+    var plotWidthPx by remember { mutableFloatStateOf(1f) }
+
+    val xAxisTicks = remember(durationSec) {
+        val totalMin = (durationSec / 60f).coerceAtLeast(1f)
+        val maxM = totalMin.roundToInt().coerceAtLeast(1)
+        val tickCount = 7
+        (0 until tickCount).map { idx ->
+            if (idx == 0) {
+                "0m"
+            } else if (idx == tickCount - 1) {
+                "${maxM}m"
+            } else {
+                val frac = idx.toFloat() / (tickCount - 1).toFloat()
+                val m = (maxM * frac).roundToInt()
+                "${m}m"
+            }
+        }.distinct()
+    }
+
+    val distKmText = remember(distanceMeters) {
+        if (distanceMeters > 0) {
+            String.format(ptBr, "%.2f km", distanceMeters / 1000f)
+        } else {
+            "-- km"
+        }
+    }
+    val durationFormatted = remember(durationSec) {
+        val m = durationSec / 60
+        val s = durationSec % 60
+        String.format(Locale.US, "%02d:%02d", m, s)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(bgColor),
+            color = bgColor
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .systemBarsPadding()
+                    .navigationBarsPadding()
+            ) {
+                // BARRA SUPERIOR FIXA COM TÍTULO E BOTÃO FECHAR [ X ] NO TOPO DIREITO
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
+                        Text(
+                            text = "ANÁLISE CARDÍACA DA SESSÃO",
+                            color = Color(0xFF00E5FF),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.8.sp
+                        )
+                        Text(
+                            text = "Semana $weekNumber • Dia $dayNumber  |  $distKmText  |  $durationFormatted",
+                            color = secondaryText,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(cardColor, CircleShape)
+                            .testTag("btn_close_session_hr_modal")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Fechar Análise Cardíaca da Sessão",
+                            tint = primaryText
+                        )
+                    }
+                }
+
+                HorizontalDivider(thickness = 0.5.dp, color = cardBorder)
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // 1. CARD SUPERIOR: MÉDIA SESSÃO | PICO SESSÃO | FC MÁX CALIBRADA + RECUPERAÇÃO 1MIN
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = cardColor),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, cardBorder)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = "MÉDIA SESSÃO",
+                                        color = secondaryText,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        text = "$avgHr bpm",
+                                        color = Color(0xFF00E5FF),
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Black,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .width(1.dp)
+                                        .height(36.dp)
+                                        .background(cardBorder)
+                                )
+
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = "PICO SESSÃO",
+                                        color = secondaryText,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        text = "$maxHr bpm",
+                                        color = Color(0xFFFFD600),
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Black,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .width(1.dp)
+                                        .height(36.dp)
+                                        .background(cardBorder)
+                                )
+
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = "FC MÁX CALIBRADA",
+                                        color = secondaryText,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        text = "$calibratedMaxHr bpm",
+                                        color = Color(0xFF00E676),
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Black,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                }
+                            }
+
+                            HorizontalDivider(thickness = 0.5.dp, color = cardBorder)
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Recuperação Cardíaca (Caminhadas / 1min)",
+                                    color = secondaryText,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "-$recoveryDropBpm bpm",
+                                    color = Color(0xFF00E676),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Black
+                                )
+                            }
+                        }
+                    }
+
+                    // 2. GRÁFICO INTERATIVO DA CURVA DE BPM COM SCRUBBING
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = cardColor),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, cardBorder)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            val activeIdx = scrubbedIndex?.coerceIn(0, (effectiveSamples.size - 1).coerceAtLeast(0))
+                            if (activeIdx != null && effectiveSamples.isNotEmpty()) {
+                                val fraction = activeIdx.toFloat() / (effectiveSamples.size - 1).coerceAtLeast(1)
+                                val activeBpm = effectiveSamples[activeIdx]
+                                val activeZone = getHrZoneForBpm(activeBpm)
+                                val (badgeBg, badgeFg) = getZoneBadgeColors(activeZone, isLightMode)
+                                val activeTimeSec = (fraction * durationSec.coerceAtLeast(1)).roundToInt()
+                                val mm = activeTimeSec / 60
+                                val ss = activeTimeSec % 60
+                                val timeFormatted = String.format(Locale.US, "%02d:%02d", mm, ss)
+                                val (phaseBlockLabel, instantPaceLabel) = remember(
+                                    activeIdx,
+                                    activeBpm,
+                                    avgHr,
+                                    avgPaceSecPerKm,
+                                    routePointItems,
+                                    splits
+                                ) {
+                                    resolvePhaseAndPaceAtFraction(
+                                        fraction = fraction,
+                                        bpmAtPoint = activeBpm,
+                                        avgHr = avgHr,
+                                        avgPaceSecPerKm = avgPaceSecPerKm,
+                                        routePointItems = routePointItems,
+                                        splits = splits
+                                    )
+                                }
+
+                                Surface(
+                                    color = if (isLightMode) Color(0xFFF1F5F9) else Color(0xFF0D0F14),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, activeZone.color.copy(alpha = 0.65f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(10.dp)
+                                                        .background(activeZone.color, CircleShape)
+                                                )
+                                                Text(
+                                                    text = "Minuto $timeFormatted • $activeBpm bpm",
+                                                    color = primaryText,
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Black
+                                                )
+                                            }
+                                            Surface(
+                                                color = badgeBg,
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = activeZone.name,
+                                                    color = badgeFg,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+
+                                        Text(
+                                            text = "Bloco: $phaseBlockLabel • Pace: $instantPaceLabel",
+                                            color = secondaryText,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+
+                            val yAxisReservedWidth = 30.dp
+                            val yAxisSpacerWidth = 8.dp
+                            val totalRightAxisPadding = yAxisReservedWidth + yAxisSpacerWidth
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(260.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .onSizeChanged { size ->
+                                            plotWidthPx = size.width.toFloat().coerceAtLeast(1f)
+                                        }
+                                        .pointerInput(effectiveSamples) {
+                                            detectTapGestures { offset ->
+                                                if (effectiveSamples.isNotEmpty()) {
+                                                    val ratio = (offset.x / plotWidthPx).coerceIn(0f, 1f)
+                                                    scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
+                                                }
+                                            }
+                                        }
+                                        .pointerInput(effectiveSamples) {
+                                            detectHorizontalDragGestures(
+                                                onDragStart = { offset ->
+                                                    if (effectiveSamples.isNotEmpty()) {
+                                                        val ratio = (offset.x / plotWidthPx).coerceIn(0f, 1f)
+                                                        scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
+                                                    }
+                                                },
+                                                onHorizontalDrag = { change, _ ->
+                                                    change.consume()
+                                                    if (effectiveSamples.isNotEmpty()) {
+                                                        val ratio = (change.position.x / plotWidthPx).coerceIn(0f, 1f)
+                                                        scrubbedIndex = (ratio * (effectiveSamples.size - 1)).roundToInt()
+                                                    }
+                                                }
+                                            )
+                                        }
+                                ) {
+                                    HaylouHeartRateCanvas(
+                                        samples = effectiveSamples,
+                                        isLightMode = isLightMode,
+                                        activeIdx = activeIdx,
+                                        strokeWidthDp = 2.8f
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(yAxisSpacerWidth))
+
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .width(yAxisReservedWidth),
+                                    verticalArrangement = Arrangement.SpaceBetween,
+                                    horizontalAlignment = Alignment.End
+                                ) {
+                                    Text("180", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                    Text("155", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                    Text("130", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                    Text("105", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                    Text("80", color = secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(end = totalRightAxisPadding),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                xAxisTicks.forEachIndexed { idx, tick ->
+                                    Text(
+                                        text = tick,
+                                        color = secondaryText,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        textAlign = when (idx) {
+                                            0 -> TextAlign.Start
+                                            xAxisTicks.lastIndex -> TextAlign.End
+                                            else -> TextAlign.Center
+                                        }
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = "Deslize o dedo sobre o gráfico para inspecionar batimentos, bloco e pace segundo a segundo.",
+                                color = secondaryText,
+                                fontSize = 11.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+
+                    // 3. DISTRIBUIÇÃO REAL DE TEMPO E PERCENTUAL NAS 5 ZONAS (Z1 A Z5)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = cardColor),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, cardBorder)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "DISTRIBUIÇÃO NAS 5 ZONAS (Z1 – Z5)",
+                                    color = primaryText,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Black,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = "% (MM:SS)",
+                                    color = secondaryText,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+
+                            coherent5Zones.forEach { zItem ->
+                                val zColor = Color(zItem.colorHex)
+                                val pctInt = zItem.percentage.roundToInt().coerceIn(0, 100)
+                                val progressFraction = if (pctInt <= 0) 0f else (pctInt / 100f).coerceIn(0f, 1f)
+                                val rangeLabel = if (zItem.zoneIndex == 1) {
+                                    "≤ ${zItem.maxBpm} bpm (<62% FCmáx)"
+                                } else if (zItem.zoneIndex == 5) {
+                                    "≥ ${zItem.minBpm} bpm (>92% FCmáx)"
+                                } else {
+                                    "${zItem.minBpm}–${zItem.maxBpm} bpm"
+                                }
+
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFF0D0F14), RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(end = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Surface(
+                                                color = zColor.copy(alpha = 0.22f),
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = "Z${zItem.zoneIndex}",
+                                                    color = zColor,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Black,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                            Column {
+                                                Text(
+                                                    text = zItem.label,
+                                                    color = primaryText,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = rangeLabel,
+                                                    color = secondaryText,
+                                                    fontSize = 10.sp,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+
+                                        Text(
+                                            text = "${pctInt}% (${zItem.formattedDuration})",
+                                            color = if (pctInt > 0) primaryText else secondaryText,
+                                            fontSize = 12.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Black,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(7.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (isLightMode) Color(0xFFE2E8F0) else Color(0xFF1E2433))
+                                    ) {
+                                        if (progressFraction > 0f) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxHeight()
+                                                    .fillMaxWidth(progressFraction)
+                                                    .background(zColor, RoundedCornerShape(4.dp))
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
+            }
+        }
+    }
+}
