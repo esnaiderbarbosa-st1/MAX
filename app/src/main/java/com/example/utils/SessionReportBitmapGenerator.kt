@@ -490,20 +490,31 @@ object SessionReportBitmapGenerator {
             Pair("${dossier.totalCaloriesKcal} kcal", "Total Kcal (${dossier.activeCaloriesKcal} ativas)")
         }
 
+        val cadenceDisplayText = if (dossier.avgCadenceSpm > 0) {
+            val maxStr = if (dossier.maxCadenceSpm > 0) "${dossier.maxCadenceSpm}" else "--"
+            "${dossier.avgCadenceSpm}/$maxStr ppm"
+        } else "--"
+        val strideDisplayText = if (dossier.avgStrideLengthCm > 0) {
+            val maxStr = if (dossier.maxStrideLengthCm > 0) "${dossier.maxStrideLengthCm}" else "--"
+            "${dossier.avgStrideLengthCm}/$maxStr cm"
+        } else "--"
+        val vitalityDisplayText = if (dossier.vitalityScoreGain > 0) "+${dossier.vitalityScoreGain} Vitalidade" else "--"
+        val stepsDisplayText = if (dossier.totalSteps > 0) "${dossier.totalSteps} passos" else "--"
+
         val gridData = listOf(
             listOf(
                 Pair(dossier.formattedDurationHhMmSs, "Tempo (HH:MM:SS)"),
-                Pair("${dossier.formattedAvgPace}/km", "Média de Ritmo"),
+                Pair(if (dossier.avgPaceSecPerKm > 0) "${dossier.formattedAvgPace}/km" else "--", "Média de Ritmo"),
                 caloriesDisplayPair
             ),
             listOf(
                 Pair(sprintAnalytics.avgSprintPaceText, sprintAnalytics.primaryPaceLabel),
-                Pair("${dossier.avgCadenceSpm}/${dossier.maxCadenceSpm} ppm", "Cadência Méd / Máx"),
-                Pair("${dossier.avgStrideLengthCm}/${dossier.maxStrideLengthCm} cm", "Passada Méd / Máx")
+                Pair(cadenceDisplayText, "Cadência Méd / Máx"),
+                Pair(strideDisplayText, "Passada Méd / Máx")
             ),
             listOf(
-                Pair("+${dossier.vitalityScoreGain} Vitalidade", "Efeito do Treino"),
-                Pair("${dossier.totalSteps} passos", "Passos Totais"),
+                Pair(vitalityDisplayText, "Efeito do Treino"),
+                Pair(stepsDisplayText, "Passos Totais"),
                 Pair("+${sprintAnalytics.elevationGainMeters} m", "Elevação (m)")
             )
         )
@@ -749,42 +760,51 @@ object SessionReportBitmapGenerator {
         var zoneRowY = graphTop + graphHeight + 36f
         val zoneColWidth = 250f
 
-        reportZones.forEachIndexed { idx, (zoneName, zoneColor) ->
-            val pct = dossier.hrZones5.getOrNull(idx)?.percentage ?: 0f
-
-            paint.color = primaryTextColor
-            paint.textSize = 23f
+        if (dossier.hrZones5.isEmpty() || dossier.hrZones5.all { it.percentage <= 0f }) {
+            paint.color = secondaryTextColor
+            paint.textSize = 24f
             paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            canvas.drawText(zoneName, marginX + 32f, zoneRowY + 14f, paint)
+            paint.textAlign = Paint.Align.CENTER
+            canvas.drawText("Sem dados de FC", marginX + (contentWidth / 2f), zoneRowY + 90f, paint)
+            paint.textAlign = Paint.Align.LEFT
+        } else {
+            reportZones.forEachIndexed { idx, (zoneName, zoneColor) ->
+                val pct = dossier.hrZones5.getOrNull(idx)?.percentage ?: 0f
 
-            val barLeft = marginX + 32f + zoneColWidth
-            val barRight = marginX + contentWidth - 110f
-            val barWidthTotal = barRight - barLeft
-            val barTrackRect = RectF(barLeft, zoneRowY + 2f, barRight, zoneRowY + 16f)
+                paint.color = primaryTextColor
+                paint.textSize = 23f
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                canvas.drawText(zoneName, marginX + 32f, zoneRowY + 14f, paint)
 
-            val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = if (isLightReport) 0xFFE2E8F0.toInt() else 0xFF242A38.toInt()
-                style = Paint.Style.FILL
-            }
-            canvas.drawRoundRect(barTrackRect, 7f, 7f, trackPaint)
+                val barLeft = marginX + 32f + zoneColWidth
+                val barRight = marginX + contentWidth - 110f
+                val barWidthTotal = barRight - barLeft
+                val barTrackRect = RectF(barLeft, zoneRowY + 2f, barRight, zoneRowY + 16f)
 
-            val fillWidth = (pct / 100f) * barWidthTotal
-            if (pct > 0f) {
-                val fillRect = RectF(barLeft, zoneRowY + 2f, barLeft + fillWidth.coerceAtLeast(10f), zoneRowY + 16f)
-                val fillZonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = zoneColor
+                val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = if (isLightReport) 0xFFE2E8F0.toInt() else 0xFF242A38.toInt()
                     style = Paint.Style.FILL
                 }
-                canvas.drawRoundRect(fillRect, 7f, 7f, fillZonePaint)
+                canvas.drawRoundRect(barTrackRect, 7f, 7f, trackPaint)
+
+                val fillWidth = (pct / 100f) * barWidthTotal
+                if (pct > 0f) {
+                    val fillRect = RectF(barLeft, zoneRowY + 2f, barLeft + fillWidth.coerceAtLeast(10f), zoneRowY + 16f)
+                    val fillZonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = zoneColor
+                        style = Paint.Style.FILL
+                    }
+                    canvas.drawRoundRect(fillRect, 7f, 7f, fillZonePaint)
+                }
+
+                paint.color = primaryTextColor
+                paint.textSize = 23f
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                val pctStr = "${pct.roundToInt()}%"
+                canvas.drawText(pctStr, barRight + 16f, zoneRowY + 14f, paint)
+
+                zoneRowY += 46f
             }
-
-            paint.color = primaryTextColor
-            paint.textSize = 23f
-            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            val pctStr = "${pct.roundToInt()}%"
-            canvas.drawText(pctStr, barRight + 16f, zoneRowY + 14f, paint)
-
-            zoneRowY += 46f
         }
 
         currentY += hrCardHeight + 36f
@@ -828,7 +848,14 @@ object SessionReportBitmapGenerator {
         canvas.drawLine(marginX + 32f, tableY, marginX + contentWidth - 32f, tableY, linePaint)
 
         val basePace = effectivePaceSec.takeIf { it > 0 } ?: 450
-        effectiveSplits.forEach { split ->
+        if (effectiveSplits.isEmpty()) {
+            paint.color = secondaryTextColor
+            paint.textSize = 24f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            paint.textAlign = Paint.Align.CENTER
+            canvas.drawText("Parciais indisponíveis", marginX + (contentWidth / 2f), tableY + 46f, paint)
+            paint.textAlign = Paint.Align.LEFT
+        } else effectiveSplits.forEach { split ->
             tableY += 56f
 
             val labelColor = when (split.phaseTag) {

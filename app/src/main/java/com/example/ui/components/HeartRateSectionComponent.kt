@@ -520,13 +520,17 @@ fun FullscreenHeartRateAnalysisDialog(
     }
 
     val coherent5Zones = remember(effectiveSamples, avgHr, maxHr, calibratedMaxHr, durationSec) {
-        computeCoherent5ZoneDistribution(
-            hrSamples = effectiveSamples,
-            avgBpm = avgHr,
-            maxBpm = maxHr,
-            effectiveMaxHr = calibratedMaxHr,
-            durationSeconds = durationSec.coerceAtLeast(60)
-        )
+        if (effectiveSamples.size >= 5) {
+            computeCoherent5ZoneDistribution(
+                hrSamples = effectiveSamples,
+                avgBpm = avgHr,
+                maxBpm = maxHr,
+                effectiveMaxHr = calibratedMaxHr,
+                durationSeconds = durationSec.coerceAtLeast(60)
+            )
+        } else {
+            emptyList()
+        }
     }
 
     val recoveryDropBpm = remember(effectiveSamples, splits) {
@@ -734,7 +738,7 @@ fun FullscreenHeartRateAnalysisDialog(
                                         maxLines = 1
                                     )
                                     Text(
-                                        text = "$calibratedMaxHr bpm",
+                                        text = if (avgHr > 0 || maxHr > 0) "$calibratedMaxHr bpm" else "-- bpm",
                                         color = Color(0xFF00E676),
                                         fontSize = 20.sp,
                                         fontWeight = FontWeight.Black,

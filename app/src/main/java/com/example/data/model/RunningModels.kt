@@ -1638,7 +1638,7 @@ fun calculateEffectiveMaxHr(
  * - Z5 (VO2 máximo / Limite): > 92% da FCmáx
  */
 fun buildCalibratedHrZoneRanges(effectiveMaxHr: Int): List<Pair<Int, Int>> {
-    val safeMax = effectiveMaxHr.coerceIn(165, 215)
+    val safeMax = effectiveMaxHr.coerceIn(120, 225)
     val z1Max = (safeMax * 0.62f).roundToInt()
     val z2Max = (safeMax * 0.71f).roundToInt().coerceAtLeast(z1Max + 8)
     val z3Max = (safeMax * 0.825f).roundToInt().coerceAtLeast(z2Max + 10)
@@ -1820,294 +1820,217 @@ fun buildSplitsForMode(
     if (session.distanceMeters <= 0 && (session.mainRunDistanceMeters ?: 0) <= 0) {
         return emptyList()
     }
-    val analytics = calculateSprintAnalytics(session, gpsPoints)
-    val recordedHrList = session.hrTimeline.toHrTimelineList().filter { it in 55..225 }
-    val hasRealHr = (session.avgHr != null && session.avgHr > 0) || recordedHrList.isNotEmpty()
-    val baseHr = (session.avgHr?.takeIf { it in 80..215 }
-        ?: if (recordedHrList.isNotEmpty()) recordedHrList.average().safeRoundToInt() else 0)
-    val peakHr = if (hasRealHr) {
-        maxOf(
-            session.maxHr?.takeIf { it in 95..225 } ?: 0,
-            recordedHrList.maxOrNull() ?: 0,
-            baseHr + 18
-        ).safeCoerceIn((baseHr + 6).coerceAtMost(215), 215)
-    } else 0
+    val recordedHrList = session.hrTimeline.toHrTimelineList().filter { it in 45..240 }
+    val routeItems = session.routePointsJson.toRoutePointItems()
 
-    // 1. Constrói os blocos físicos reais da sessão (RUN vs WALK) com distância e tempo 100% reconciliados
-    fun buildPhysicalBlockSplits(): List<RecordedKmSplit> {
-        val plan = if (session.isGentleMode) {
-            RunningProgramManager.getGentleWalkPlan()
-        } else {
-            RunningProgramManager.getPlanForWeek(session.weekNumber, session.dayNumber)
-        }
-        val middleBlocks = plan.blocks.filter {
-            it.type == RunningBlockType.RUN || it.type == RunningBlockType.WALK
-        }.ifEmpty { plan.blocks }
-        val activePlanBlocks: List<Pair<Boolean, Int>> = middleBlocks.map {
-            (it.type == RunningBlockType.RUN) to it.durationSec
-        }
+    val effectiveGpsPoints: List<GpsTrackPoint> = if (gpsPoints.size >= 2) {
+        gpsPoints.filter { it.latitude != 0.0 && it.longitude != 0.0 }.sortedBy { it.timestampMs }
+    } else {
+        routeItems
+            .filter { it.lat != 0.0 && it.lon != 0.0 && it.timestamp > 0L }
+            .sortedBy { it.timestamp }
+            .map { pt ->
+                GpsTrackPoint(
+                    sessionId = session.id,
+                    timestampMs = pt.timestamp,
+                    capturedAtMs = pt.timestamp,
+                    latitude = pt.lat,
+                    longitude = pt.lon,
+                    accuracyM = pt.accuracy,
+                    speedMps = pt.speed,
+                    altitudeM = pt.altitude
+                )
+            }
+    }
 
-        val totalPlanBlockSec = activePlanBlocks.sumOf { it.second }.coerceAtLeast(1)
-        val targetTotalSec = analytics.mainDurationSec.coerceAtLeast(60)
-        val targetTotalDistM = analytics.mainDistMeters.coerceAtLeast(200)
+    // 1. Calcula parciais reais por bloco somente quando existem pontos GPS gravados com marcação real de bloco/fase
+    fun buildRealRecordedBlockSplits(): List<RecordedKmSplit> {
+        val validPts = routeItems
+            .filter { it.lat != 0.0 && it.lon != 0.0 && it.timestamp > 0L }
+            .sortedBy { it.timestamp }
+        if (validPts.size < 2) return emptyList()
 
-        val sprintPaceBase = analytics.avgSprintPaceSecPerKm.takeIf { it in 140..720 } ?: 355
-        val walkPaceBase = (sprintPaceBase * 1.46).roundToInt().coerceIn(510, 780)
-
-        val totalRunBlocks = activePlanBlocks.count { it.first }.coerceAtLeast(1)
-        val prRunNumber = if (totalRunBlocks >= 2) ((totalRunBlocks * 2) / 3).coerceAtLeast(1) else 1
-
-        // Calcula durações exatas por bloco cuja soma bate 100% com targetTotalSec
-        val rawBlockDurations = activePlanBlocks.map { (_, dur) ->
-            ((dur.toDouble() / totalPlanBlockSec.toDouble()) * targetTotalSec).roundToInt().coerceAtLeast(15)
-        }.toMutableList()
-        val durDiff = targetTotalSec - rawBlockDurations.sum()
-        if (rawBlockDurations.isNotEmpty() && durDiff != 0) {
-            val lastIdx = rawBlockDurations.lastIndex
-            rawBlockDurations[lastIdx] = (rawBlockDurations[lastIdx] + durDiff).coerceAtLeast(10)
+        fun normalizePhase(raw: String): String = when (raw.trim().uppercase(Locale.US)) {
+            "WARMUP", "WARM_UP" -> "WARMUP"
+            "COOL_DOWN", "COOLDOWN" -> "COOL_DOWN"
+            "WALK", "RECOVERY" -> "WALK"
+            "RUN", "SPRINT", "INTERVAL", "PR" -> "RUN"
+            else -> ""
         }
 
-        // Calcula distâncias não-escaladas por bloco usando velocidade física real de cada fase
-        var runIdx = 0
-        var walkIdx = 0
-        val unscaledDistList = activePlanBlocks.mapIndexed { idx, (isRun, _) ->
-            val bDur = rawBlockDurations[idx]
-            if (isRun) {
-                runIdx++
-                val isPr = runIdx == prRunNumber
-                val durationFactor = if (bDur <= 130) 0.975 else 1.015
-                val prFactor = if (isPr) 0.935 else 1.0
-                val progressionFactor = 1.0 - ((runIdx - 1).toDouble() / totalRunBlocks.coerceAtLeast(2).toDouble()) * 0.025
-                val blockPace = (sprintPaceBase * durationFactor * prFactor * progressionFactor).coerceIn(145.0, 720.0)
-                (bDur * 1000.0) / blockPace
+        val taggedPts = validPts.map { it to normalizePhase(it.phase) }
+        val distinctGroups = taggedPts.map { (pt, ph) -> pt.blockIndex to ph }.distinct()
+        val hasRecordedBlockStructure = taggedPts.all { it.second.isNotEmpty() } && distinctGroups.size >= 2
+        if (!hasRecordedBlockStructure) return emptyList()
+
+        val sessionStartTs = validPts.first().timestamp
+        val sessionSpanMs = (validPts.last().timestamp - sessionStartTs).coerceAtLeast(1L)
+
+        data class RawBlockRun(
+            val blockIndex: Int,
+            val phase: String,
+            val distM: Double,
+            val durSec: Double,
+            val startTs: Long,
+            val endTs: Long
+        )
+
+        val blocksAcc = mutableListOf<RawBlockRun>()
+        var curBlockIdx = taggedPts.first().first.blockIndex
+        var curPhase = taggedPts.first().second
+        var curStartTs = taggedPts.first().first.timestamp
+        var curEndTs = curStartTs
+        var curDist = 0.0
+        var curDur = 0.0
+
+        for (i in 1 until taggedPts.size) {
+            val (pPrev, _) = taggedPts[i - 1]
+            val (pCur, phCur) = taggedPts[i]
+            val sameBlock = pCur.blockIndex == curBlockIdx && phCur == curPhase
+            val dM = com.example.services.GpsEvaluator.distanceBetweenMeters(
+                pPrev.lat, pPrev.lon, pCur.lat, pCur.lon
+            )
+            val dtSec = (pCur.timestamp - pPrev.timestamp) / 1000.0
+            if (sameBlock) {
+                if (dM in 0.5..120.0 && dtSec > 0.0 && dtSec <= 60.0) {
+                    curDist += dM
+                    curDur += dtSec
+                }
+                curEndTs = pCur.timestamp
             } else {
-                walkIdx++
-                val walkFactor = if (walkIdx == 1) 0.96 else if (walkIdx % 2 == 0) 1.03 else 0.99
-                val blockPace = (walkPaceBase * walkFactor).coerceIn(460.0, 860.0)
-                (bDur * 1000.0) / blockPace
+                blocksAcc.add(RawBlockRun(curBlockIdx, curPhase, curDist, curDur, curStartTs, curEndTs))
+                curBlockIdx = pCur.blockIndex
+                curPhase = phCur
+                curStartTs = pCur.timestamp
+                curEndTs = pCur.timestamp
+                curDist = 0.0
+                curDur = 0.0
             }
         }
+        blocksAcc.add(RawBlockRun(curBlockIdx, curPhase, curDist, curDur, curStartTs, curEndTs))
 
-        val unscaledTotalDist = unscaledDistList.sum().coerceAtLeast(1.0)
-        val distScale = targetTotalDistM.toDouble() / unscaledTotalDist
-        val scaledDistList = unscaledDistList.map { (it * distScale).roundToInt().coerceAtLeast(20) }.toMutableList()
-        val distDiff = targetTotalDistM - scaledDistList.sum()
-        if (scaledDistList.isNotEmpty() && distDiff != 0) {
-            val longestIdx = scaledDistList.indices.maxByOrNull { scaledDistList[it] } ?: scaledDistList.lastIndex
-            scaledDistList[longestIdx] = (scaledDistList[longestIdx] + distDiff).coerceAtLeast(20)
-        }
+        val mainBlocks = blocksAcc.filter { it.phase == "RUN" || it.phase == "WALK" }.ifEmpty { blocksAcc }
+        val validBlocks = mainBlocks.filter { it.distM >= 10.0 && it.durSec >= 5.0 }
+        if (validBlocks.isEmpty()) return emptyList()
 
         var runCounter = 0
         var walkCounter = 0
-        var elapsedAccSec = 0
-        val rawRunVsWalkRatio = activePlanBlocks.sumOf { if (it.first) it.second else 0 }.toFloat() /
-            totalPlanBlockSec.toFloat().coerceAtLeast(1f)
-        val runWatchDelta = ((1f - rawRunVsWalkRatio) * 21f).roundToInt().coerceIn(7, 16)
-        val walkWatchDelta = (rawRunVsWalkRatio * 21f).roundToInt().coerceIn(7, 16)
+        val built = validBlocks.mapIndexed { idx, blk ->
+            val isRun = blk.phase == "RUN"
+            val distInt = blk.distM.roundToInt().coerceAtLeast(1)
+            val durInt = blk.durSec.roundToInt().coerceAtLeast(1)
+            val paceSec = ((blk.durSec * 1000.0) / blk.distM).roundToInt().coerceIn(140, 3600)
 
-        val result = mutableListOf<RecordedKmSplit>()
-        activePlanBlocks.forEachIndexed { idx, (isRun, _) ->
-            val blockDurSec = rawBlockDurations[idx]
-            val blockDistM = scaledDistList[idx]
-            val startFrac = elapsedAccSec.toFloat() / targetTotalSec.toFloat().coerceAtLeast(1f)
-            elapsedAccSec += blockDurSec
-            val endFrac = elapsedAccSec.toFloat() / targetTotalSec.toFloat().coerceAtLeast(1f)
-            val midFrac = (startFrac + endFrac) * 0.5f
-
-            if (isRun) runCounter++ else walkCounter++
-            val isPrBlock = isRun && runCounter == prRunNumber
-            val exactPaceSec = ((blockDurSec * 1000.0) / blockDistM.toDouble()).roundToInt()
-
-            val label = when {
-                isPrBlock -> "Tiro $runCounter ★"
-                isRun -> "Tiro $runCounter"
-                else -> "Rec. $walkCounter"
+            val label = when (blk.phase) {
+                "RUN" -> {
+                    runCounter++
+                    "Tiro $runCounter"
+                }
+                "WALK" -> {
+                    walkCounter++
+                    "Rec. $walkCounter"
+                }
+                "WARMUP" -> "Aquecimento"
+                "COOL_DOWN" -> "Desaquecimento"
+                else -> "Bloco ${idx + 1}"
             }
 
-            // Para blocos RUN, captura a FC nos últimos 15s (platô final do tiro/pico de esforço);
-            // Para blocos WALK, captura a FC nos últimos 15s da caminhada (mínimo/final da recuperação autonômica),
-            // evitando que a inércia inicial da caminhada (logo após o tiro) inverta a queda autonômica (HRR).
-            val blockHr: Int? = if (!hasRealHr || peakHr <= 0) {
-                null
-            } else if (recordedHrList.size >= 4) {
+            val blockHr: Int? = if (recordedHrList.size >= 2) {
+                val startFrac = ((blk.startTs - sessionStartTs).toDouble() / sessionSpanMs.toDouble()).coerceIn(0.0, 1.0)
+                val endFrac = ((blk.endTs - sessionStartTs).toDouble() / sessionSpanMs.toDouble()).coerceIn(startFrac, 1.0)
                 val i0 = (startFrac * (recordedHrList.size - 1)).safeRoundToInt().safeCoerceIn(0, recordedHrList.lastIndex)
                 val i1 = (endFrac * (recordedHrList.size - 1)).safeRoundToInt().safeCoerceIn(i0, recordedHrList.lastIndex)
-                val sub = recordedHrList.subList(i0, i1 + 1)
-                val last15sCount = maxOf(1, (sub.size * 0.35).safeRoundToInt())
-                val tailSamples = sub.takeLast(last15sCount).ifEmpty { sub }
-                val drift = ((midFrac - 0.45f) * 8f).safeRoundToInt()
-                if (isRun) {
-                    val rawRunEndHr = maxOf(
-                        tailSamples.average().safeRoundToInt(baseHr),
-                        sub.maxOrNull() ?: baseHr
-                    )
-                    val floorRunHr = (baseHr + (runWatchDelta / 2) + drift).safeCoerceIn(baseHr + 3, maxOf(baseHr + 3, peakHr - 2))
-                    maxOf(rawRunEndHr, floorRunHr).safeCoerceIn(110, maxOf(110, peakHr))
-                } else {
-                    val rawWalkEndHr = minOf(
-                        tailSamples.average().safeRoundToInt(baseHr),
-                        sub.minOrNull() ?: baseHr
-                    )
-                    val ceilWalkHr = (baseHr - (walkWatchDelta / 2) + drift).safeCoerceIn(105, (baseHr - 4).coerceAtLeast(105))
-                    minOf(rawWalkEndHr, ceilWalkHr).safeCoerceIn(100, (peakHr - 8).coerceAtLeast(105))
-                }
-            } else {
-                val drift = ((midFrac - 0.45f) * 9f).safeRoundToInt()
-                if (isPrBlock) {
-                    maxOf(baseHr + runWatchDelta + 4, peakHr - 7).safeCoerceIn(baseHr + 4, maxOf(baseHr + 4, peakHr - 2))
-                } else if (isRun) {
-                    val durBoost = if (blockDurSec >= 165) 3 else -1
-                    (baseHr + runWatchDelta + drift + durBoost).safeCoerceIn(baseHr + 2, maxOf(baseHr + 2, peakHr - 4))
-                } else {
-                    val recDrop = if (blockDurSec >= 165) -2 else 1
-                    (baseHr - walkWatchDelta + drift + recDrop).safeCoerceIn(108, (baseHr - 3).coerceAtLeast(108))
-                }
-            }
+                recordedHrList.subList(i0, i1 + 1).takeIf { it.isNotEmpty() }?.average()?.safeRoundToInt()
+            } else null
 
-            result.add(
-                RecordedKmSplit(
-                    splitNumber = idx + 1,
-                    splitLabel = label,
-                    distanceMeters = blockDistM,
-                    durationSec = blockDurSec,
-                    paceSecPerKm = exactPaceSec,
-                    avgHr = blockHr,
-                    phaseTag = if (isPrBlock) "PR" else if (isRun) "RUN" else "WALK"
-                )
+            RecordedKmSplit(
+                splitNumber = idx + 1,
+                splitLabel = label,
+                distanceMeters = distInt,
+                durationSec = durInt,
+                paceSecPerKm = paceSec,
+                avgHr = blockHr,
+                phaseTag = if (isRun) "RUN" else blk.phase
+            )
+        }.toMutableList()
+
+        // Marca "★" apenas no bloco medido com menor ritmo (mais rápido)
+        val candidateIndices = built.indices.filter { built[it].phaseTag == "RUN" }.ifEmpty { built.indices.toList() }
+        val fastestIdx = candidateIndices.minByOrNull { built[it].paceSecPerKm }
+        if (fastestIdx != null && built.size >= 2) {
+            val fastest = built[fastestIdx]
+            built[fastestIdx] = fastest.copy(
+                splitLabel = if (fastest.splitLabel.contains("★")) fastest.splitLabel else "${fastest.splitLabel} ★",
+                phaseTag = "PR"
             )
         }
-        return result
+        return built
     }
 
-    val physicalBlocks = buildPhysicalBlockSplits()
+    // 2. Integra apenas segmentos GPS reais a cada janela de distância (500m ou 1000m). Sem >= 6 pontos GPS, retorna lista vazia.
+    fun sliceSplitsByDistance(
+        stepSizeM: Int,
+        isHalfKm: Boolean,
+        useKmNLabel: Boolean = false
+    ): List<RecordedKmSplit> {
+        if (effectiveGpsPoints.size < 6) return emptyList()
 
-    // 2. Integra os segmentos GPS reais ou os blocos físicos (RUN/WALK) a cada janela de distância (500m ou 1000m)
-    fun sliceSplitsByDistance(stepSizeM: Int, isHalfKm: Boolean): List<RecordedKmSplit> {
-        val totalDistM = analytics.mainDistMeters.coerceAtLeast(if (isHalfKm) 500 else 100)
-        val totalDurSec = analytics.mainDurationSec.coerceAtLeast(30)
-
-        data class GpsSegment(val distM: Double, val dtSec: Double, val startSec: Double, val endSec: Double)
+        data class GpsSegment(val distM: Double, val dtSec: Double, val midSec: Double)
         val gpsSegments = mutableListOf<GpsSegment>()
-        if (gpsPoints.size >= 6) {
-            val sortedPts = gpsPoints.sortedBy { it.timestampMs }
-            val t0 = sortedPts.first().timestampMs
-            val distBuf = FloatArray(1)
-            var rawDistSum = 0.0
-            var rawTimeSum = 0.0
-            for (i in 1 until sortedPts.size) {
-                val p0 = sortedPts[i - 1]
-                val p1 = sortedPts[i]
-                Location.distanceBetween(p0.latitude, p0.longitude, p1.latitude, p1.longitude, distBuf)
-                val d = distBuf[0].toDouble()
-                val dt = ((p1.timestampMs - p0.timestampMs) / 1000.0).coerceIn(0.5, 30.0)
-                if (d in 0.5..120.0) {
-                    val s0 = ((p0.timestampMs - t0) / 1000.0).coerceAtLeast(0.0)
-                    rawDistSum += d
-                    rawTimeSum += dt
-                    gpsSegments.add(GpsSegment(d, dt, s0, s0 + dt))
-                }
-            }
-            if (rawDistSum < totalDistM * 0.55 || rawTimeSum <= 15.0) {
-                gpsSegments.clear()
+        val t0 = effectiveGpsPoints.first().timestampMs
+        var rawDistSum = 0.0
+        var rawTimeSum = 0.0
+        for (i in 1 until effectiveGpsPoints.size) {
+            val p0 = effectiveGpsPoints[i - 1]
+            val p1 = effectiveGpsPoints[i]
+            val d = com.example.services.GpsEvaluator.distanceBetweenMeters(
+                p0.latitude, p0.longitude, p1.latitude, p1.longitude
+            )
+            val dt = (p1.timestampMs - p0.timestampMs) / 1000.0
+            if (d in 0.5..120.0 && dt > 0.0 && dt <= 60.0) {
+                val s0 = ((p0.timestampMs - t0) / 1000.0).coerceAtLeast(0.0)
+                rawDistSum += d
+                rawTimeSum += dt
+                gpsSegments.add(GpsSegment(d, dt, s0 + dt * 0.5))
             }
         }
+        if (gpsSegments.isEmpty() || rawDistSum < 20.0 || rawTimeSum <= 5.0) {
+            return emptyList()
+        }
+
+        val totalGpsSpanSec = ((effectiveGpsPoints.last().timestampMs - t0) / 1000.0)
+            .coerceAtLeast(rawTimeSum)
+            .coerceAtLeast(1.0)
 
         data class DistanceSliceAtom(
             val distMeters: Double,
             val durationSec: Double,
-            val hrBpm: Double,
-            val isRun: Boolean,
-            val isPr: Boolean
+            val hrBpm: Double?
         )
 
-        val atoms = mutableListOf<DistanceSliceAtom>()
-        if (gpsSegments.isNotEmpty()) {
-            val rawDistTotal = gpsSegments.sumOf { it.distM }.coerceAtLeast(1.0)
-            val rawTimeTotal = gpsSegments.sumOf { it.dtSec }.coerceAtLeast(1.0)
-            val dScale = totalDistM.toDouble() / rawDistTotal
-            val tScale = totalDurSec.toDouble() / rawTimeTotal
-            var accScaledSec = 0.0
-            for (seg in gpsSegments) {
-                val dM = seg.distM * dScale
-                val dtS = seg.dtSec * tScale
-                val midFrac = ((accScaledSec + dtS * 0.5) / totalDurSec.toDouble()).coerceIn(0.0, 1.0)
-                accScaledSec += dtS
-                val segPace = if (dM > 0.1) (dtS * 1000.0) / dM else 420.0
-                val isRunSeg = segPace <= (analytics.avgSprintPaceSecPerKm * 1.15)
-                val isPrSeg = segPace <= (analytics.bestSprintPaceSecPerKm * 1.03)
-                val hrVal = if (recordedHrList.size >= 4) {
-                    val idx = (midFrac * (recordedHrList.size - 1)).roundToInt().coerceIn(0, recordedHrList.lastIndex)
-                    recordedHrList[idx].toDouble()
-                } else {
-                    var bAcc = 0
-                    var matchedHr = baseHr
-                    for (b in physicalBlocks) {
-                        if (accScaledSec <= bAcc + b.durationSec || b == physicalBlocks.last()) {
-                            matchedHr = b.avgHr ?: baseHr
-                            break
-                        }
-                        bAcc += b.durationSec
-                    }
-                    matchedHr.toDouble()
-                }
-                atoms.add(DistanceSliceAtom(dM, dtS, hrVal, isRunSeg, isPrSeg))
-            }
-        } else {
-            for (b in physicalBlocks) {
-                val bDist = b.distanceMeters.toDouble().coerceAtLeast(1.0)
-                val bDur = b.durationSec.toDouble().coerceAtLeast(1.0)
-                val bHr = (b.avgHr ?: baseHr).toDouble()
-                val isRun = b.phaseTag == "RUN" || b.phaseTag == "PR"
-                val isPr = b.phaseTag == "PR"
-                val subCount = (b.distanceMeters / 25).coerceIn(4, 24)
-                val subDist = bDist / subCount
-                val subDur = bDur / subCount
-                for (s in 0 until subCount) {
-                    val subFrac = (s + 0.5) / subCount.toDouble()
-                    val intraHrOffset = if (isRun) {
-                        (subFrac - 0.5) * (if (isPr) 10.0 else 7.0)
-                    } else {
-                        (0.5 - subFrac) * 6.0
-                    }
-                    val intraPaceFactor = if (isRun) {
-                        1.0 + (subFrac - 0.5) * 0.03
-                    } else {
-                        1.0 - (subFrac - 0.5) * 0.02
-                    }
-                    atoms.add(
-                        DistanceSliceAtom(
-                            distMeters = subDist,
-                            durationSec = subDur * intraPaceFactor,
-                            hrBpm = if (hasRealHr && peakHr > 0) {
-                                (bHr + intraHrOffset).safeCoerceIn(95.0, maxOf(95.0, peakHr.toDouble()))
-                            } else {
-                                0.0
-                            },
-                            isRun = isRun,
-                            isPr = isPr
-                        )
-                    )
-                }
-            }
+        val atoms = gpsSegments.map { seg ->
+            val midFrac = (seg.midSec / totalGpsSpanSec).coerceIn(0.0, 1.0)
+            val hrVal: Double? = if (recordedHrList.size >= 2) {
+                val idx = (midFrac * (recordedHrList.size - 1)).roundToInt().coerceIn(0, recordedHrList.lastIndex)
+                recordedHrList[idx].toDouble()
+            } else null
+            DistanceSliceAtom(seg.distM, seg.dtSec, hrVal)
         }
 
+        val totalMeasuredM = rawDistSum.roundToInt().coerceAtLeast(1)
         val splits = mutableListOf<RecordedKmSplit>()
-        var remainingTotalM = totalDistM
+        var remainingTotalM = totalMeasuredM.toDouble()
         var splitIndex = 1
-        var accumulatedDistM = 0
-        var accumulatedSec = 0
+        var accumulatedDistM = 0.0
         var atomCursor = 0
-        var atomRemainingDist = if (atoms.isNotEmpty()) atoms[0].distMeters else 0.0
+        var atomRemainingDist = atoms.first().distMeters
 
-        while (remainingTotalM > 0) {
-            val chunkM = remainingTotalM.coerceAtMost(stepSizeM)
-            val isLastChunk = remainingTotalM <= stepSizeM
-
-            var neededM = chunkM.toDouble()
+        while (remainingTotalM >= 10.0 && atomCursor < atoms.size) {
+            val chunkM = minOf(remainingTotalM, stepSizeM.toDouble())
+            var neededM = chunkM
             var chunkDurAcc = 0.0
             var chunkHrWeightedAcc = 0.0
-            var chunkRunDistAcc = 0.0
-            var chunkPrDistAcc = 0.0
+            var chunkHrDurAcc = 0.0
 
             while (neededM > 0.01 && atomCursor < atoms.size) {
                 val atom = atoms[atomCursor]
@@ -2116,9 +2039,10 @@ fun buildSplitsForMode(
                     val ratio = takeM / atom.distMeters.coerceAtLeast(0.001)
                     val takeDur = atom.durationSec * ratio
                     chunkDurAcc += takeDur
-                    chunkHrWeightedAcc += atom.hrBpm * takeDur
-                    if (atom.isRun) chunkRunDistAcc += takeM
-                    if (atom.isPr) chunkPrDistAcc += takeM
+                    if (atom.hrBpm != null && atom.hrBpm > 0.0) {
+                        chunkHrWeightedAcc += atom.hrBpm * takeDur
+                        chunkHrDurAcc += takeDur
+                    }
                     neededM -= takeM
                     atomRemainingDist -= takeM
                 }
@@ -2130,67 +2054,51 @@ fun buildSplitsForMode(
                 }
             }
 
-            val rawChunkSec = if (isLastChunk && splits.isNotEmpty()) {
-                (totalDurSec - accumulatedSec).coerceAtLeast(1)
-            } else if (isLastChunk) {
-                totalDurSec.coerceAtLeast(1)
-            } else {
-                chunkDurAcc.roundToInt().coerceIn(1, (totalDurSec - accumulatedSec - 1).coerceAtLeast(1))
-            }
+            val actualChunkM = (chunkM - neededM).roundToInt()
+            val chunkDurSec = chunkDurAcc.roundToInt()
+            if (actualChunkM < 10 || chunkDurSec <= 0) break
 
-            val exactPaceSec = when (chunkM) {
-                500 -> rawChunkSec * 2
-                1000 -> rawChunkSec
-                else -> ((rawChunkSec * 1000.0) / chunkM.toDouble()).roundToInt()
-            }
+            val exactPaceSec = ((chunkDurAcc * 1000.0) / actualChunkM.toDouble())
+                .roundToInt()
+                .coerceIn(140, 3600)
 
-            accumulatedDistM += chunkM
-            accumulatedSec += rawChunkSec
-
+            accumulatedDistM += actualChunkM
             val accumKm = accumulatedDistM / 1000.0
-            val label = if (isHalfKm) {
-                if (chunkM == 500) {
-                    String.format(Locale.US, "%.1f km", accumKm).replace('.', ',')
-                } else {
-                    String.format(Locale.US, "%.2f km", accumKm).replace('.', ',')
+            val label = when {
+                useKmNLabel -> "Km $splitIndex"
+                isHalfKm -> {
+                    if (actualChunkM in 495..505) {
+                        String.format(Locale.US, "%.1f km", accumKm).replace('.', ',')
+                    } else {
+                        String.format(Locale.US, "%.2f km", accumKm).replace('.', ',')
+                    }
                 }
-            } else {
-                if (chunkM == 1000) {
-                    "$splitIndex,0 km"
-                } else {
-                    String.format(Locale.US, "%.2f km", accumKm).replace('.', ',')
+                else -> {
+                    if (actualChunkM in 995..1005) {
+                        "$splitIndex,0 km"
+                    } else {
+                        String.format(Locale.US, "%.2f km", accumKm).replace('.', ',')
+                    }
                 }
             }
 
-            val splitHr: Int? = if (!hasRealHr || peakHr <= 0) {
-                null
-            } else if (chunkDurAcc > 0.1 && chunkHrWeightedAcc > 0.1) {
-                (chunkHrWeightedAcc / chunkDurAcc).safeRoundToInt().safeCoerceIn(95, peakHr.coerceAtLeast(95))
-            } else {
-                baseHr.takeIf { it > 0 }
-            }
-
-            val runFraction = chunkRunDistAcc / chunkM.toDouble().coerceAtLeast(1.0)
-            val prFraction = chunkPrDistAcc / chunkM.toDouble().coerceAtLeast(1.0)
-            val phase = when {
-                prFraction >= 0.45 -> "PR"
-                runFraction >= 0.52 -> "RUN"
-                else -> "WALK"
-            }
+            val splitHr: Int? = if (chunkHrDurAcc > 0.1) {
+                (chunkHrWeightedAcc / chunkHrDurAcc).safeRoundToInt().takeIf { it in 45..240 }
+            } else null
 
             splits.add(
                 RecordedKmSplit(
                     splitNumber = splitIndex,
                     splitLabel = label,
-                    distanceMeters = chunkM,
-                    durationSec = rawChunkSec,
+                    distanceMeters = actualChunkM,
+                    durationSec = chunkDurSec,
                     paceSecPerKm = exactPaceSec,
                     avgHr = splitHr,
-                    phaseTag = phase
+                    phaseTag = "RUN"
                 )
             )
 
-            remainingTotalM -= chunkM
+            remainingTotalM -= actualChunkM
             splitIndex++
         }
 
@@ -2217,27 +2125,32 @@ fun buildSplitsForMode(
                     val fastestPace = saved.filter { it.distanceMeters >= 400 }.minOfOrNull { it.paceSecPerKm }
                         ?: saved.minOfOrNull { it.paceSecPerKm }
                     saved.map { s ->
-                        val isPr = fastestPace != null && s.paceSecPerKm == fastestPace
+                        val isPr = fastestPace != null && saved.size >= 2 && s.paceSecPerKm == fastestPace
                         s.copy(
                             splitLabel = if (isPr && !s.splitLabel.contains("★")) "${s.splitLabel} ★" else s.splitLabel,
                             phaseTag = if (isPr) "PR" else "RUN"
                         )
                     }
                 } else {
-                    sliceSplitsByDistance(stepSizeM = 1000, isHalfKm = false)
+                    sliceSplitsByDistance(stepSizeM = 1000, isHalfKm = false, useKmNLabel = true)
                 }
             } else {
-                physicalBlocks
+                val realBlockSplits = buildRealRecordedBlockSplits()
+                if (realBlockSplits.isNotEmpty()) {
+                    realBlockSplits
+                } else {
+                    sliceSplitsByDistance(stepSizeM = 1000, isHalfKm = false, useKmNLabel = true)
+                }
             }
         }
         SplitSelectorMode.HALF_KM -> sliceSplitsByDistance(stepSizeM = 500, isHalfKm = true)
         SplitSelectorMode.ONE_KM_MAIN -> {
             val saved = session.kmSplitsJson.toRecordedKmSplits()
-            if (RunningProgramManager.isFreeOrRaceSessionType(session.sessionType) && saved.isNotEmpty()) {
+            if (saved.isNotEmpty()) {
                 val fastestPace = saved.filter { it.distanceMeters >= 400 }.minOfOrNull { it.paceSecPerKm }
                     ?: saved.minOfOrNull { it.paceSecPerKm }
                 saved.map { s ->
-                    val isPr = fastestPace != null && s.paceSecPerKm == fastestPace
+                    val isPr = fastestPace != null && saved.size >= 2 && s.paceSecPerKm == fastestPace
                     s.copy(phaseTag = if (isPr) "PR" else "RUN")
                 }
             } else {
@@ -2355,23 +2268,23 @@ data class RunPhysiologyDossier(
     val formattedMaxPace: String,
     val avgHeartRateBpm: Int,
     val maxHeartRateBpm: Int,
-    val effectiveMaxHeartRateBpm: Int = 190,
+    val effectiveMaxHeartRateBpm: Int = 0,
     val isHrEstimated: Boolean,
     val totalSteps: Int,
     val totalStepsWithWarmup: Int = totalSteps,
     val avgCadenceSpm: Int,
     val maxCadenceSpm: Int,
     val avgStrideLengthCm: Int,
-    val maxStrideLengthCm: Int = 112,
-    val vitalityScoreGain: Int = 5,
-    val trainingEffectTitle: String = "Manutenção Aeróbica & Recuperação Híbrida",
-    val hybridRecoveryImpact: String = "Janela 48h Full Body: Sinergia cardiorrespiratória ideal • SNC pronto para hipertrofia.",
-    val dataSourceLabel: String = "MAX RUN Telemetry v4.5 • GPS Engine Mobile",
-    val firstIntervalPaceSecPerKm: Int = avgPaceSecPerKm,
-    val lastIntervalPaceSecPerKm: Int = avgPaceSecPerKm,
+    val maxStrideLengthCm: Int = 0,
+    val vitalityScoreGain: Int = 0,
+    val trainingEffectTitle: String = "Sem dados de FC para classificar o efeito do treino",
+    val hybridRecoveryImpact: String = "Sem dados de FC suficientes para inferir carga ou impacto de recuperação.",
+    val dataSourceLabel: String = "MAX RUN • Registro manual",
+    val firstIntervalPaceSecPerKm: Int = 0,
+    val lastIntervalPaceSecPerKm: Int = 0,
     val paceFadePct: Float = 0f,
-    val consistencyVerdictTitle: String = "Forte não significa no máximo: excelente controle de ritmo",
-    val consistencyVerdictDetail: String = "Sustentação limpa entre o 1º e o último bloco sem quebra metabólica.",
+    val consistencyVerdictTitle: String = "Consistência indisponível — dados de ritmo insuficientes",
+    val consistencyVerdictDetail: String = "São necessárias ao menos 2 parciais medidas ou série de GPS para avaliar a variação de ritmo.",
     val telemetrySamples: List<RunTelemetrySample>,
     val hrZones5: List<HrZone5Item>,
     val kmSplits: List<KmSplit>
@@ -2412,9 +2325,57 @@ fun calculateRunActiveCaloriesKcal(
 }
 
 /**
- * Constrói o Dossiê Fisiológico e Biomecânico completo da sessão, garantindo 100% de coerência
- * matemática entre distância, duração, passos, cadência, passada média (`(distanciaMetros * 100) / passosDoBloco`)
- * e calorias do bloco principal (`~1.036 * pesoKg * distanciaKm`), separando o total com aquecimento/desaquecimento na legenda.
+ * Deriva a série temporal de ritmo (elapsedSec, paceSecPerKm) exclusivamente a partir
+ * das coordenadas e timestamps reais de GPS, usando janela móvel curta de 3 segmentos.
+ * Retorna lista vazia se houver menos de 2 pontos GPS válidos.
+ */
+internal fun computeRealGpsPaceSeries(gpsPoints: List<GpsTrackPoint>): List<Pair<Int, Float>> {
+    if (gpsPoints.size < 2) return emptyList()
+    val validPts = gpsPoints
+        .filter { it.latitude != 0.0 && it.longitude != 0.0 && it.timestampMs > 0L }
+        .sortedBy { it.timestampMs }
+    if (validPts.size < 2) return emptyList()
+
+    val startTs = validPts.first().timestampMs
+    data class GpsSeg(val elapsedSec: Int, val distM: Double, val dtSec: Double)
+
+    val segments = mutableListOf<GpsSeg>()
+    for (i in 1 until validPts.size) {
+        val p0 = validPts[i - 1]
+        val p1 = validPts[i]
+        val dtSec = (p1.timestampMs - p0.timestampMs) / 1000.0
+        if (dtSec <= 0.0 || dtSec > 60.0) continue
+        val dM = com.example.services.GpsEvaluator.distanceBetweenMeters(
+            p0.latitude, p0.longitude, p1.latitude, p1.longitude
+        )
+        if (dM < 0.5 || dM > 120.0) continue
+        val speedMps = dM / dtSec
+        if (speedMps > 12.0) continue
+        val elapsedSec = ((p1.timestampMs - startTs) / 1000L).toInt().coerceAtLeast(0)
+        segments.add(GpsSeg(elapsedSec, dM, dtSec))
+    }
+    if (segments.isEmpty()) return emptyList()
+
+    val result = mutableListOf<Pair<Int, Float>>()
+    for (i in segments.indices) {
+        val wStart = (i - 1).coerceAtLeast(0)
+        val wEnd = (i + 1).coerceAtMost(segments.lastIndex)
+        var wDist = 0.0
+        var wDt = 0.0
+        for (j in wStart..wEnd) {
+            wDist += segments[j].distM
+            wDt += segments[j].dtSec
+        }
+        if (wDist >= 1.0 && wDt > 0.0) {
+            val paceSec = ((wDt * 1000.0) / wDist).toFloat().coerceIn(140f, 3600f)
+            result.add(segments[i].elapsedSec to paceSec)
+        }
+    }
+    return result
+}
+
+/**
+ * Constrói o Dossiê Fisiológico e Biomecânico completo da sessão a partir de dados efetivamente medidos.
  */
 fun buildRunPhysiologyDossier(
     session: RunningSession,
@@ -2451,7 +2412,7 @@ fun buildRunPhysiologyDossier(
                 session.mainRunAvgPaceSecPerKm
             session.avgPaceSecPerKm > 0 -> session.avgPaceSecPerKm
             else -> 0
-        }.let { if (it > 0) it.coerceIn(140, 1200) else 0 }
+        }.let { if (it > 0) it.coerceIn(140, 3600) else 0 }
     }
 
     // 1. Calorias Ativas vs. Total de Kcal (função única com peso válido; sem peso válido, não calcula com 70 kg silencioso)
@@ -2512,10 +2473,7 @@ fun buildRunPhysiologyDossier(
 
     // 2. Identificação de Atleta, Badge e Data/Hora
     val rawName = userProfile?.nome?.trim().orEmpty()
-    val athleteName = when {
-        rawName.isBlank() || rawName.equals("Esnaider", ignoreCase = true) -> "Esnaider Barbosa"
-        else -> rawName
-    }
+    val athleteName = rawName.ifBlank { "Atleta" }
     val freeRaceMode = com.example.engine.FreeRunRaceMode.fromSessionType(session.sessionType)
     val badgeTitle = when {
         freeRaceMode != null -> "MAX RUN | ${freeRaceMode.fullTitle}"
@@ -2525,33 +2483,15 @@ fun buildRunPhysiologyDossier(
     }
     val formattedDateTime = java.text.SimpleDateFormat("dd/MM/yyyy • HH:mm", ptBr).format(java.util.Date(session.date))
 
-    // 3. Geração / Reconstrução das Séries Temporais (RunTelemetrySample) alinhada a effectiveDurationSec
-    val plan = if (session.isGentleMode) {
-        RunningProgramManager.getGentleWalkPlan()
-    } else {
-        RunningProgramManager.getPlanForWeek(session.weekNumber, session.dayNumber)
-    }
-    val mid = plan.blocks.filter {
-        it.type == RunningBlockType.RUN || it.type == RunningBlockType.WALK
-    }.ifEmpty { plan.blocks }
-    val activeBlocks: List<Pair<RunningBlockType, Int>> = mid.map { it.type to it.durationSec }
-
-    val totalPlanBlockSec = activeBlocks.sumOf { it.second }.coerceAtLeast(1)
-    val recordedHrList = session.hrTimeline.toHrTimelineList().filter { it in 55..220 }
+    // 3. Séries Temporais estritamente medidas (GPS real + hrTimeline real + dados reais do relógio, sem Random ou plano)
+    val recordedHrList = session.hrTimeline.toHrTimelineList().filter { it in 45..240 }
+    val hasRealHrSeries = recordedHrList.size >= 2
     val isHrEstimated = (session.avgHr == null || session.avgHr <= 0) && recordedHrList.isEmpty()
-
-    val seed = (session.id.hashCode().toLong()) + (session.date % 99991L) + effectiveDurationSec * 13L
-    val rng = java.util.Random(seed)
-
-    val sampleCount = if (hasRealDisplacement) (effectiveDurationSec / 10).coerceIn(48, 140) else 0
-    val sprintBasePace = sprintAnalytics.avgSprintPaceSecPerKm.takeIf { it in 150..720 }
-        ?: if (avgPaceSec > 0) (avgPaceSec * 0.88).roundToInt().coerceIn(185, 520) else 0
-    val walkBasePace = if (sprintBasePace > 0) (sprintBasePace * 1.48f).coerceIn(510f, 760f) else 0f
 
     val targetAvgHr = if (isHrEstimated) {
         0
     } else {
-        (session.avgHr?.takeIf { it in 50..220 }
+        (session.avgHr?.takeIf { it in 45..240 }
             ?: recordedHrList.takeIf { it.isNotEmpty() }?.average()?.roundToInt()
             ?: 0)
     }
@@ -2566,142 +2506,108 @@ fun buildRunPhysiologyDossier(
         )
     }
 
-    // Auto-calibração dinâmica da FC Máxima Efetiva (effectiveMaxHr)
-    val effectiveMaxHr = calculateEffectiveMaxHr(
-        ageYears = ageYears ?: 30,
-        sessionMaxHrBpm = targetMaxHr.takeIf { it > 0 },
-        historicalPeakHrBpm = session.maxHr
-    )
-
-    // Determina qual bloco RUN é o pico de velocidade (PR)
-    val totalRunBlocks = activeBlocks.count { it.first == RunningBlockType.RUN }.coerceAtLeast(1)
-    val prRunBlockNumber = ((totalRunBlocks * 2) / 3).coerceAtLeast(1)
-
-    val samples = ArrayList<RunTelemetrySample>(sampleCount)
-    var currentHr = if (targetAvgHr > 0) (targetAvgHr - 20).coerceIn(85, 140).toFloat() else 0f
-    var currentPace = (walkBasePace * 0.94f).coerceIn(420f, 680f)
-    var organicHrDrift = 0f
-    var organicPaceDrift = 0f
-
-    for (i in 0 until sampleCount) {
-        val frac = i.toFloat() / (sampleCount - 1).coerceAtLeast(1).toFloat()
-        val elapsedSec = (frac * effectiveDurationSec).roundToInt()
-
-        val planPosSec = (frac * totalPlanBlockSec).roundToInt().coerceIn(0, totalPlanBlockSec)
-        var accSec = 0
-        var blockType = RunningBlockType.RUN
-        var runBlockIdx = 0
-        var intraBlockFrac = 0.5f
-        for (idx in activeBlocks.indices) {
-            val (bType, bDur) = activeBlocks[idx]
-            if (bType == RunningBlockType.RUN) runBlockIdx++
-            if (planPosSec <= accSec + bDur || idx == activeBlocks.lastIndex) {
-                blockType = bType
-                intraBlockFrac = ((planPosSec - accSec).toFloat() / bDur.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
-                break
-            }
-            accSec += bDur
-        }
-
-        val isInitialRamp = frac < 0.05f
-        val isRunPhase = !session.isGentleMode && blockType == RunningBlockType.RUN
-        val isPrWindow = isRunPhase && runBlockIdx == prRunBlockNumber
-
-        val phaseTag = when {
-            isPrWindow -> "PR"
-            isRunPhase -> "RUN"
-            else -> "WALK"
-        }
-
-        organicPaceDrift = (organicPaceDrift * 0.55f + (rng.nextFloat() - 0.5f) * 8f).coerceIn(-12f, 12f)
-        val targetPaceSec = when {
-            isPrWindow -> (sprintBasePace * 0.92f) + organicPaceDrift * 0.5f
-            isRunPhase -> {
-                val blockVar = if (runBlockIdx % 2 == 0) 0.98f else 1.02f
-                (sprintBasePace * blockVar) + organicPaceDrift
-            }
-            else -> walkBasePace + organicPaceDrift
-        }.coerceIn(165f, 840f)
-
-        val paceAlpha = if (targetPaceSec < currentPace) 0.58f else 0.48f
-        currentPace += (targetPaceSec - currentPace) * paceAlpha
-
-        val sampleHr = if (isHrEstimated) {
-            0
-        } else if (recordedHrList.size >= 8) {
-            val pos = frac * (recordedHrList.size - 1)
-            val idx0 = pos.toInt().coerceIn(0, recordedHrList.lastIndex)
-            val idx1 = (idx0 + 1).coerceIn(0, recordedHrList.lastIndex)
-            val f = pos - idx0
-            val interp = recordedHrList[idx0] + (recordedHrList[idx1] - recordedHrList[idx0]) * f
-            val micro = (rng.nextFloat() - 0.5f) * 1.5f
-            (interp + micro).roundToInt().coerceIn(55, targetMaxHr.coerceAtLeast(55))
-        } else {
-            organicHrDrift = (organicHrDrift * 0.58f + (rng.nextFloat() - 0.49f) * 2.2f).coerceIn(-3.0f, 3.0f)
-            val cardiovascularDrift = (frac - 0.35f) * 9f
-            val targetHr = when {
-                isInitialRamp -> {
-                    val p = (frac / 0.05f).coerceIn(0f, 1f)
-                    (targetAvgHr - 28f) + 26f * p
-                }
-                isPrWindow -> {
-                    val sprintRamp = (intraBlockFrac * 1.15f).coerceIn(0.15f, 1f)
-                    (targetAvgHr + 6f) + (targetMaxHr - (targetAvgHr + 6f)) * sprintRamp + organicHrDrift * 0.4f
-                }
-                isRunPhase -> {
-                    val sprintRamp = (intraBlockFrac * 10f)
-                    (targetAvgHr + 4f + sprintRamp + cardiovascularDrift * 0.55f) + organicHrDrift
-                }
-                else -> {
-                    val recDrop = (intraBlockFrac * 9f)
-                    (targetAvgHr - 7f - recDrop + cardiovascularDrift * 0.35f) + organicHrDrift
-                }
-            }.coerceIn(60f, targetMaxHr.coerceAtLeast(60).toFloat())
-
-            val hrAlpha = if (targetHr > currentHr) 0.52f else 0.44f
-            currentHr += (targetHr - currentHr) * hrAlpha
-            currentHr.roundToInt().coerceIn(60, targetMaxHr.coerceAtLeast(60))
-        }
-
-        val speedMps = (1000f / currentPace.coerceAtLeast(1f)).safeCoerceIn(1.1f, 5.8f)
-        val baseCad = adv?.watchSyncedCadenceSpm?.takeIf { it in 95..215 }
-            ?: sprintAnalytics.avgCadenceSpm.takeIf { it in 105..205 }
-            ?: 156
-        val cadenceSpm = when {
-            !isRunPhase -> (115 + ((speedMps - 1.2f) * 16f).safeRoundToInt() + rng.nextInt(3) - 1).safeCoerceIn(110, 128)
-            isPrWindow -> (baseCad + 5 + rng.nextInt(4)).safeCoerceIn(minOf(baseCad, 186), maxOf(baseCad, 186))
-            else -> (baseCad + ((speedMps - 2.6f) * 6f).safeRoundToInt() + rng.nextInt(3) - 1).safeCoerceIn(120, maxOf(182, baseCad))
-        }
-        val strideLengthCm = (((speedMps * 60f) / cadenceSpm.coerceAtLeast(1).toFloat()) * 100f)
-            .safeRoundToInt()
-            .safeCoerceIn(55, 145)
-
-        samples.add(
-            RunTelemetrySample(
-                elapsedSeconds = elapsedSec,
-                paceSecPerKm = currentPace,
-                heartRateBpm = sampleHr,
-                cadenceSpm = cadenceSpm,
-                strideLengthCm = strideLengthCm,
-                phaseTag = phaseTag
-            )
+    // Sem idade no perfil, não assume 30: usa apenas a FC máxima medida da sessão para calibrar as zonas
+    val effectiveMaxHr = if (ageYears != null) {
+        calculateEffectiveMaxHr(
+            ageYears = ageYears,
+            sessionMaxHrBpm = targetMaxHr.takeIf { it > 0 },
+            historicalPeakHrBpm = session.maxHr
         )
+    } else {
+        targetMaxHr
     }
 
-    if (!isHrEstimated && recordedHrList.size < 8 && samples.size > 6) {
-        val rawMean = samples.map { it.heartRateBpm }.average()
-        val deltaMean = (targetAvgHr - rawMean).safeRoundToInt()
-        if (deltaMean != 0) {
-            for (idx in samples.indices) {
-                val adjusted = (samples[idx].heartRateBpm + deltaMean).safeCoerceIn(60, (targetMaxHr - 1).coerceAtLeast(60))
-                samples[idx] = samples[idx].copy(heartRateBpm = adjusted)
+    val realGpsPoints: List<GpsTrackPoint> = if (gpsPoints.size >= 2) {
+        gpsPoints.filter { it.latitude != 0.0 && it.longitude != 0.0 }.sortedBy { it.timestampMs }
+    } else {
+        val fromRoute = session.routePointsJson.toRoutePointItems()
+            .filter { it.lat != 0.0 && it.lon != 0.0 && it.timestamp > 0L }
+            .sortedBy { it.timestamp }
+        if (fromRoute.size >= 2) {
+            fromRoute.map { pt ->
+                GpsTrackPoint(
+                    sessionId = session.id,
+                    timestampMs = pt.timestamp,
+                    capturedAtMs = pt.timestamp,
+                    latitude = pt.lat,
+                    longitude = pt.lon,
+                    accuracyM = pt.accuracy,
+                    speedMps = pt.speed,
+                    altitudeM = pt.altitude
+                )
+            }
+        } else {
+            emptyList()
+        }
+    }
+
+    // Ritmo por amostra derivado exclusivamente dos pontos GPS reais (janela móvel curta de 3 segmentos)
+    val gpsPaceSeries: List<Pair<Int, Float>> = computeRealGpsPaceSeries(realGpsPoints)
+
+    val realSampleCadence = adv?.watchSyncedCadenceSpm?.takeIf { it in 80..230 } ?: 0
+    val realSampleStride = adv?.watchSyncedStrideCm?.takeIf { it in 40..220 } ?: 0
+
+    val samples: List<RunTelemetrySample> = when {
+        gpsPaceSeries.isEmpty() && !hasRealHrSeries -> emptyList()
+        gpsPaceSeries.isEmpty() -> {
+            // Somente FC gravada (sem GPS): preserva exatamente cada leitura de hrTimeline sem ruído
+            val hrCount = recordedHrList.size
+            recordedHrList.mapIndexed { idx, bpm ->
+                val frac = idx.toFloat() / (hrCount - 1).coerceAtLeast(1).toFloat()
+                RunTelemetrySample(
+                    elapsedSeconds = (frac * effectiveDurationSec).roundToInt(),
+                    paceSecPerKm = 0f,
+                    heartRateBpm = bpm,
+                    cadenceSpm = realSampleCadence,
+                    strideLengthCm = realSampleStride,
+                    phaseTag = "RUN"
+                )
             }
         }
-        val prIndex = samples.indices.filter { samples[it].phaseTag == "PR" }.maxByOrNull { samples[it].heartRateBpm }
-            ?: samples.indexOfFirst { it.phaseTag == "PR" }.takeIf { it >= 0 }
-            ?: (samples.size * 2 / 3)
-        if (prIndex in samples.indices) {
-            samples[prIndex] = samples[prIndex].copy(heartRateBpm = targetMaxHr)
+        !hasRealHrSeries -> {
+            // Somente GPS real (sem série de FC >= 2 leituras)
+            gpsPaceSeries.map { (elapsedSec, paceSec) ->
+                RunTelemetrySample(
+                    elapsedSeconds = elapsedSec,
+                    paceSecPerKm = paceSec,
+                    heartRateBpm = 0,
+                    cadenceSpm = realSampleCadence,
+                    strideLengthCm = realSampleStride,
+                    phaseTag = "RUN"
+                )
+            }
+        }
+        gpsPaceSeries.size >= recordedHrList.size -> {
+            val totalSpanSec = maxOf(gpsPaceSeries.last().first, effectiveDurationSec, 1)
+            gpsPaceSeries.map { (elapsedSec, paceSec) ->
+                val frac = (elapsedSec.toFloat() / totalSpanSec.toFloat()).coerceIn(0f, 1f)
+                val hrIdx = (frac * (recordedHrList.size - 1)).roundToInt().coerceIn(0, recordedHrList.lastIndex)
+                RunTelemetrySample(
+                    elapsedSeconds = elapsedSec,
+                    paceSecPerKm = paceSec,
+                    heartRateBpm = recordedHrList[hrIdx],
+                    cadenceSpm = realSampleCadence,
+                    strideLengthCm = realSampleStride,
+                    phaseTag = "RUN"
+                )
+            }
+        }
+        else -> {
+            val totalSpanSec = maxOf(gpsPaceSeries.last().first, effectiveDurationSec, 1)
+            val hrCount = recordedHrList.size
+            recordedHrList.mapIndexed { idx, bpm ->
+                val frac = idx.toFloat() / (hrCount - 1).coerceAtLeast(1).toFloat()
+                val elapsedSec = (frac * totalSpanSec).roundToInt()
+                val nearestGps = gpsPaceSeries.minByOrNull { kotlin.math.abs(it.first - elapsedSec) }
+                RunTelemetrySample(
+                    elapsedSeconds = elapsedSec,
+                    paceSecPerKm = nearestGps?.second ?: 0f,
+                    heartRateBpm = bpm,
+                    cadenceSpm = realSampleCadence,
+                    strideLengthCm = realSampleStride,
+                    phaseTag = "RUN"
+                )
+            }
         }
     }
 
@@ -2710,7 +2616,6 @@ fun buildRunPhysiologyDossier(
     } else {
         session.avgHr?.takeIf { it > 0 }
             ?: recordedHrList.takeIf { it.isNotEmpty() }?.average()?.roundToInt()
-            ?: samples.mapNotNull { it.heartRateBpm.takeIf { v -> v > 0 } }.takeIf { it.isNotEmpty() }?.average()?.roundToInt()
             ?: 0
     }
     val computedMaxHr = if (isHrEstimated) {
@@ -2719,20 +2624,23 @@ fun buildRunPhysiologyDossier(
         maxOf(
             session.maxHr ?: 0,
             recordedHrList.maxOrNull() ?: 0,
-            samples.maxOfOrNull { it.heartRateBpm } ?: 0,
             computedAvgHr
         )
     }
 
+    // Melhor ritmo: menor ritmo GPS real ou menor parcial salva; sem dado, usa avgPaceSec (sem teto artificial * 0.86)
     val maxPaceSec = if (!hasRealDisplacement) {
         0
     } else {
-        val fastestSamplePace = samples.minOfOrNull { it.paceSecPerKm }?.roundToInt() ?: sprintAnalytics.bestSprintPaceSecPerKm
-        minOf(
-            fastestSamplePace.takeIf { it > 140 } ?: avgPaceSec,
-            sprintAnalytics.bestSprintPaceSecPerKm.takeIf { it > 140 } ?: avgPaceSec,
-            (avgPaceSec * 0.86).roundToInt().coerceAtLeast(160)
-        )
+        val fastestGpsSamplePace = samples
+            .mapNotNull { it.paceSecPerKm.takeIf { p -> p >= 140f }?.roundToInt() }
+            .minOrNull()
+        val fastestRecordedSplitPace = session.kmSplitsJson.toRecordedKmSplits()
+            .filter { it.distanceMeters >= 400 && it.paceSecPerKm in 140..3600 }
+            .minOfOrNull { it.paceSecPerKm }
+        listOfNotNull(fastestGpsSamplePace, fastestRecordedSplitPace)
+            .minOrNull()
+            ?: avgPaceSec
     }
 
     val explicitDossierCadence = Regex("""(\d{3})\s*(?:ppm|spm)""", RegexOption.IGNORE_CASE)
@@ -2744,19 +2652,15 @@ fun buildRunPhysiologyDossier(
     } else {
         adv?.watchSyncedCadenceSpm?.takeIf { it in 80..230 }
             ?: explicitDossierCadence
-            ?: samples.map { it.cadenceSpm }.takeIf { it.isNotEmpty() }?.average()?.roundToInt()?.coerceAtLeast(115)
             ?: 0
     }
     val maxCadence = if (!hasRealDisplacement) {
         0
     } else {
-        maxOf(
-            samples.maxOfOrNull { it.cadenceSpm } ?: 0,
-            avgCadence + 10
-        )
+        samples.mapNotNull { it.cadenceSpm.takeIf { v -> v > 0 } }.maxOrNull() ?: 0
     }
 
-    // Passos estritamente do bloco principal (29 min) ou sincronizados do relógio (ex: 4170 passos)
+    // Passos: apenas relógio ou cálculo com cadência real; sem isso, 0
     val totalSteps = if (!hasRealDisplacement) {
         0
     } else {
@@ -2765,43 +2669,49 @@ fun buildRunPhysiologyDossier(
                 (avgCadence * (effectiveDurationSec / 60f)).roundToInt().coerceAtLeast(1)
             } else 0
     }
-    val totalStepsWithWarmup = if (!hasRealDisplacement || avgCadence <= 0) {
-        totalSteps
-    } else {
+    val totalStepsWithWarmup = if (!hasRealDisplacement || totalSteps <= 0) {
+        0
+    } else if (avgCadence > 0) {
         maxOf(totalSteps, (avgCadence * (totalSessionDurationSec / 60f)).roundToInt())
+    } else {
+        totalSteps
     }
 
-    // Coerência Matemática Estrita: Passada Média (cm) = (distanciaMetros * 100) / passosDoBloco (ou sincronizada do relógio)
-    val avgStrideCm = if (!hasRealDisplacement || totalSteps <= 0) {
+    // Passada: apenas relógio ou distância / passos reais; sem isso, 0 (sem +12 artificial)
+    val avgStrideCm = if (!hasRealDisplacement) {
         0
     } else {
         adv?.watchSyncedStrideCm?.takeIf { it in 40..220 }
-            ?: ((effectiveDistanceMeters * 100.0) / totalSteps.coerceAtLeast(1).toDouble())
-                .roundToInt()
-                .coerceIn(50, 185)
+            ?: if (totalSteps > 0) {
+                ((effectiveDistanceMeters * 100.0) / totalSteps.toDouble())
+                    .roundToInt()
+                    .coerceIn(50, 185)
+            } else 0
     }
-    val maxStrideCm = if (!hasRealDisplacement || avgStrideCm <= 0) {
+    val maxStrideCm = if (!hasRealDisplacement) {
         0
     } else {
-        maxOf(
-            samples.maxOfOrNull { it.strideLengthCm } ?: 0,
-            avgStrideCm + 12
-        ).coerceAtMost(195)
+        samples.mapNotNull { it.strideLengthCm.takeIf { v -> v > 0 } }.maxOrNull() ?: 0
     }
 
-    // 4. Cálculo das 5 Zonas Cardíacas Dinamicamente Calibradas por effectiveMaxHr
-    val hrZones5 = computeCoherent5ZoneDistribution(
-        hrSamples = if (isHrEstimated) emptyList() else if (recordedHrList.size >= 5) recordedHrList else samples.mapNotNull { it.heartRateBpm.takeIf { v -> v > 0 } },
-        avgBpm = computedAvgHr,
-        maxBpm = computedMaxHr,
-        effectiveMaxHr = effectiveMaxHr,
-        durationSeconds = effectiveDurationSec
-    )
+    // 4. Cálculo das 5 Zonas Cardíacas: apenas com >= 5 leituras reais em recordedHrList e effectiveMaxHr > 0
+    val hrZones5 = if (!isHrEstimated && recordedHrList.size >= 5 && effectiveMaxHr > 0) {
+        computeCoherent5ZoneDistribution(
+            hrSamples = recordedHrList,
+            avgBpm = computedAvgHr,
+            maxBpm = computedMaxHr,
+            effectiveMaxHr = effectiveMaxHr,
+            durationSeconds = effectiveDurationSec
+        )
+    } else {
+        emptyList()
+    }
 
-    // 5. Efeito do Treino (Vitalidade + Integração Híbrida 48h) e Fonte de Dados (Etapa 2)
+    // 5. Efeito do Treino e Fonte de Dados (sem inferir carga quando não há zonas válidas)
+    val hasValidHrZones = hrZones5.isNotEmpty() && hrZones5.any { it.percentage > 0f }
     val z3PlusPct = hrZones5.filter { it.zoneIndex >= 3 }.sumOf { it.percentage.toDouble() }.toFloat()
     val z4PlusPct = hrZones5.filter { it.zoneIndex >= 4 }.sumOf { it.percentage.toDouble() }.toFloat()
-    val vitalityScoreGain = if (!hasRealDisplacement) {
+    val vitalityScoreGain = if (!hasRealDisplacement || !hasValidHrZones) {
         0
     } else {
         ((durationMinutes / 4.2f) + (z3PlusPct * 0.045f) + (z4PlusPct * 0.035f))
@@ -2810,6 +2720,7 @@ fun buildRunPhysiologyDossier(
     }
 
     val trainingEffectTitle = when {
+        !hasValidHrZones -> "Sem dados de FC para classificar o efeito do treino"
         session.isGentleMode -> "Recuperação Ativa & Circulação Regenerativa"
         z4PlusPct >= 28f -> "Estímulo de Limiar / Pirâmide & Potência"
         z3PlusPct >= 42f -> "Evolução Aeróbica & Base Mitocondrial"
@@ -2817,6 +2728,8 @@ fun buildRunPhysiologyDossier(
     }
 
     val hybridRecoveryImpact = when {
+        !hasValidHrZones ->
+            "Sem dados de FC suficientes para inferir carga ou impacto de recuperação."
         session.isGentleMode ->
             "Janela 48h Full Body: 100% preservada • Fluxo regenerativo sem fadiga excêntrica para o próximo treino de força."
         z4PlusPct >= 28f ->
@@ -2827,20 +2740,37 @@ fun buildRunPhysiologyDossier(
             "Janela 48h Full Body: Baixo impacto articular • Recuperação metabólica acelerada para a próxima sessão de musculação."
     }
 
-    val isWatchSynced = session.hrProvenance?.source == DataSourceType.OPTICAL_PPG_WATCH ||
-        adv?.watchSyncedSteps != null || adv?.watchSyncedActiveKcal != null
+    val hasGpsTrack = realGpsPoints.size >= 2
+    val hrSourceLabel: String? = if (isHrEstimated) {
+        null
+    } else {
+        when (session.hrProvenance?.source) {
+            DataSourceType.CHEST_STRAP_BLE -> "Cinta BLE"
+            DataSourceType.OPTICAL_PPG_WATCH -> "Relógio"
+            DataSourceType.ATHLETE_REPORTED -> "FC informada manualmente"
+            DataSourceType.PHONE_GPS,
+            DataSourceType.STEP_SENSOR_PEDOMETER,
+            DataSourceType.DERIVED_CALCULATION,
+            null -> {
+                if (adv?.watchSyncedSteps != null || adv?.watchSyncedActiveKcal != null || adv?.watchSyncedCadenceSpm != null) {
+                    "Relógio"
+                } else {
+                    "Frequência cardíaca registrada"
+                }
+            }
+        }
+    }
     val dataSourceLabel = when {
-        isWatchSynced && gpsPoints.size >= 2 -> "MAX RUN Telemetry v4.5 • GPS + Relógio (Mi Fitness)"
-        isWatchSynced -> "MAX RUN Telemetry v4.5 • Relógio (Mi Fitness)"
-        !isHrEstimated && gpsPoints.size >= 2 -> "MAX RUN Telemetry v4.5 • GPS + BLE Heart Rate"
-        !isHrEstimated -> "MAX RUN Telemetry v4.5 • Sensor BLE Heart Rate"
-        session.environment.equals("TREADMILL", ignoreCase = true) -> "MAX RUN Telemetry v4.5 • Motor Indoor Esteira"
-        else -> "MAX RUN Telemetry v4.5 • MAX RUN GPS Engine • Sensor Mobile"
+        hrSourceLabel != null && hasGpsTrack -> "MAX RUN • GPS + $hrSourceLabel"
+        hrSourceLabel != null -> "MAX RUN • $hrSourceLabel"
+        session.environment.equals("TREADMILL", ignoreCase = true) -> "MAX RUN • Esteira"
+        hasGpsTrack -> "MAX RUN • GPS do Celular"
+        else -> "MAX RUN • Registro manual"
     }
 
-    // 6. Construção das Parciais por Km ("1", "2", "<3", etc.) com destaque para o km mais rápido
-    val rawOneKmSplits = buildSplitsForMode(session, SplitSelectorMode.ONE_KM_MAIN, gpsPoints)
-    val fastestSplitPace = rawOneKmSplits.minOfOrNull { it.paceSecPerKm } ?: avgPaceSec
+    // 6. Construção das Parciais por Km ("1", "2", "<3", etc.) apenas com parciais/GPS reais
+    val rawOneKmSplits = buildSplitsForMode(session, SplitSelectorMode.ONE_KM_MAIN, realGpsPoints)
+    val fastestSplitPace = rawOneKmSplits.minOfOrNull { it.paceSecPerKm } ?: 0
     val kmSplits = rawOneKmSplits.mapIndexed { index, rec ->
         val isPartial = rec.distanceMeters < 995 && index == rawOneKmSplits.lastIndex
         val kmNum = index + 1
@@ -2854,38 +2784,54 @@ fun buildRunPhysiologyDossier(
             durationSec = rec.durationSec,
             paceSecPerKm = rec.paceSecPerKm,
             avgHrBpm = rec.avgHr,
-            isFastest = rec.paceSecPerKm == fastestSplitPace && rawOneKmSplits.size > 1
+            isFastest = fastestSplitPace > 0 && rec.paceSecPerKm == fastestSplitPace && rawOneKmSplits.size > 1
         )
     }
 
-    // 7. Índice de Consistência Anti-Quebra (Comparação 1º Tiro/Bloco vs. Último Tiro/Bloco)
-    val runOnlySamples = samples.filter { it.phaseTag == "RUN" || it.phaseTag == "PR" }.ifEmpty { samples }
-    val firstIntervalPaceSec = when {
-        kmSplits.size >= 2 -> kmSplits.firstOrNull()?.paceSecPerKm ?: avgPaceSec
-        runOnlySamples.size >= 4 -> runOnlySamples.take((runOnlySamples.size / 3).coerceAtLeast(1)).map { it.paceSecPerKm }.average().safeRoundToInt(avgPaceSec)
-        else -> avgPaceSec
-    }.let { if (it > 0) it.safeCoerceIn(150, 960) else 0 }
-    val lastIntervalPaceSec = when {
-        kmSplits.size >= 2 -> kmSplits.lastOrNull()?.paceSecPerKm ?: avgPaceSec
-        runOnlySamples.size >= 4 -> runOnlySamples.takeLast((runOnlySamples.size / 3).coerceAtLeast(1)).map { it.paceSecPerKm }.average().safeRoundToInt(avgPaceSec)
-        else -> avgPaceSec
-    }.let { if (it > 0) it.safeCoerceIn(150, 960) else 0 }
-    // Positivo = ficou mais lento no final (quebra); Negativo ou <= 5% = negative split / sustentação exemplar
-    val paceFadePct = if (firstIntervalPaceSec > 0 && lastIntervalPaceSec > 0) {
+    // 7. Índice de Consistência: apenas com >= 2 parciais reais ou >= 4 amostras de ritmo por GPS real
+    val gpsPaceSamples = samples.filter { it.paceSecPerKm > 0f }
+    val hasConsistencyData = kmSplits.size >= 2 || gpsPaceSamples.size >= 4
+    val firstIntervalPaceSec = if (!hasConsistencyData) {
+        0
+    } else if (kmSplits.size >= 2) {
+        kmSplits.first().paceSecPerKm.safeCoerceIn(140, 3600)
+    } else {
+        gpsPaceSamples.take((gpsPaceSamples.size / 3).coerceAtLeast(1))
+            .map { it.paceSecPerKm }
+            .average()
+            .safeRoundToInt(0)
+            .let { if (it > 0) it.safeCoerceIn(140, 3600) else 0 }
+    }
+    val lastIntervalPaceSec = if (!hasConsistencyData) {
+        0
+    } else if (kmSplits.size >= 2) {
+        kmSplits.last().paceSecPerKm.safeCoerceIn(140, 3600)
+    } else {
+        gpsPaceSamples.takeLast((gpsPaceSamples.size / 3).coerceAtLeast(1))
+            .map { it.paceSecPerKm }
+            .average()
+            .safeRoundToInt(0)
+            .let { if (it > 0) it.safeCoerceIn(140, 3600) else 0 }
+    }
+    val paceFadePct = if (hasConsistencyData && firstIntervalPaceSec > 0 && lastIntervalPaceSec > 0) {
         ((lastIntervalPaceSec - firstIntervalPaceSec).toFloat() / firstIntervalPaceSec.toFloat().coerceAtLeast(1f)) * 100f
     } else 0f
     val (consistencyTitle, consistencyDetail) = when {
+        !hasConsistencyData || firstIntervalPaceSec <= 0 || lastIntervalPaceSec <= 0 -> Pair(
+            "Consistência indisponível — dados de ritmo insuficientes",
+            "São necessárias ao menos 2 parciais medidas ou série de GPS para avaliar a variação de ritmo."
+        )
         paceFadePct > 10.0f -> Pair(
-            "Alerta de Quebra (>10%): largada forte demais no 1º tiro",
-            "1º bloco em ${formatPaceMinSecQuote(firstIntervalPaceSec)}/km vs. último em ${formatPaceMinSecQuote(lastIntervalPaceSec)}/km (+${String.format(ptBr, "%.1f", paceFadePct)}%). Segure 10–15s/km no início para sustentar até o fim."
+            "Alerta de Quebra (>10%): largada forte demais no 1º trecho",
+            "1º trecho em ${formatPaceMinSecQuote(firstIntervalPaceSec)}/km vs. último em ${formatPaceMinSecQuote(lastIntervalPaceSec)}/km (+${String.format(ptBr, "%.1f", paceFadePct)}%). Segure 10–15s/km no início para sustentar até o fim."
         )
         paceFadePct < -1.5f -> Pair(
-            "Negative Split de Elite: último tiro mais rápido que o 1º",
-            "1º bloco em ${formatPaceMinSecQuote(firstIntervalPaceSec)}/km ➔ último em ${formatPaceMinSecQuote(lastIntervalPaceSec)}/km (${String.format(ptBr, "%.1f", paceFadePct)}%). Forte não significa no máximo: excelente reserva aeróbica."
+            "Negative Split de Elite: último trecho mais rápido que o 1º",
+            "1º trecho em ${formatPaceMinSecQuote(firstIntervalPaceSec)}/km ➔ último em ${formatPaceMinSecQuote(lastIntervalPaceSec)}/km (${String.format(ptBr, "%.1f", paceFadePct)}%). Forte não significa no máximo: excelente reserva aeróbica."
         )
         else -> Pair(
             "Forte não significa no máximo: excelente controle de ritmo",
-            "1º bloco em ${formatPaceMinSecQuote(firstIntervalPaceSec)}/km ➔ último em ${formatPaceMinSecQuote(lastIntervalPaceSec)}/km (variação ${String.format(ptBr, "%+.1f", paceFadePct)}%). Esforço controlado e repetível do início ao fim."
+            "1º trecho em ${formatPaceMinSecQuote(firstIntervalPaceSec)}/km ➔ último em ${formatPaceMinSecQuote(lastIntervalPaceSec)}/km (variação ${String.format(ptBr, "%+.1f", paceFadePct)}%). Esforço controlado e repetível do início ao fim."
         )
     }
 

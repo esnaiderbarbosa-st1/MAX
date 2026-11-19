@@ -731,8 +731,12 @@ fun ShareCardEditorScreen(viewModel: MainViewModel) {
                                         shadow = cardTextShadow
                                     )
                                 )
+                                val cadStr = if (physiologyDossier.avgCadenceSpm > 0) "${physiologyDossier.avgCadenceSpm}/${if (physiologyDossier.maxCadenceSpm > 0) physiologyDossier.maxCadenceSpm else "--"} PPM" else "--"
+                                val strideStr = if (physiologyDossier.avgStrideLengthCm > 0) "${physiologyDossier.avgStrideLengthCm}/${if (physiologyDossier.maxStrideLengthCm > 0) physiologyDossier.maxStrideLengthCm else "--"} CM" else "--"
+                                val kcalStr = if (physiologyDossier.isWeightMissingForCalories) "-- KCAL" else "${physiologyDossier.totalCaloriesKcal} KCAL"
+                                val vitStr = if (physiologyDossier.vitalityScoreGain > 0) "+${physiologyDossier.vitalityScoreGain} VITALIDADE" else "--"
                                 Text(
-                                    text = "CAD ${physiologyDossier.avgCadenceSpm}/${physiologyDossier.maxCadenceSpm} PPM • PASSADA ${physiologyDossier.avgStrideLengthCm}/${physiologyDossier.maxStrideLengthCm} CM • ${physiologyDossier.totalCaloriesKcal} KCAL • +${physiologyDossier.vitalityScoreGain} VITALIDADE",
+                                    text = "CAD $cadStr • PASSADA $strideStr • $kcalStr • $vitStr",
                                     color = getBlockTextColor("metrics").copy(alpha = 0.92f),
                                     fontSize = (13.5f * metricsTransform.fontScale).sp,
                                     fontWeight = FontWeight.Bold,
@@ -2341,9 +2345,14 @@ fun renderCardContentToCanvas(
             "   •   ${session.avgHr} BPM"
         } else ""
 
+        val cadStr = if (dossier.avgCadenceSpm > 0) "${dossier.avgCadenceSpm}/${if (dossier.maxCadenceSpm > 0) dossier.maxCadenceSpm else "--"} PPM" else "--"
+        val strideStr = if (dossier.avgStrideLengthCm > 0) "${dossier.avgStrideLengthCm}/${if (dossier.maxStrideLengthCm > 0) dossier.maxStrideLengthCm else "--"} CM" else "--"
+        val kcalStr = if (dossier.isWeightMissingForCalories) "-- KCAL" else "${dossier.totalCaloriesKcal} KCAL"
+        val vitStr = if (dossier.vitalityScoreGain > 0) "+${dossier.vitalityScoreGain} VITALIDADE" else "--"
+
         drawBlockText(
             title = "PACE $paceStr   •   TIROS $sprintPaceFormatted$hrText",
-            subtitle = "CAD ${dossier.avgCadenceSpm}/${dossier.maxCadenceSpm} PPM • PASSADA ${dossier.avgStrideLengthCm}/${dossier.maxStrideLengthCm} CM • ${dossier.totalCaloriesKcal} KCAL • +${dossier.vitalityScoreGain} VITALIDADE",
+            subtitle = "CAD $cadStr • PASSADA $strideStr • $kcalStr • $vitStr",
             transform = metricsTransform,
             textColor = metricsColor,
             fontScale = metricsTransform.fontScale,

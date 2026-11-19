@@ -1432,20 +1432,33 @@ fun RunningSessionDetailScreen(viewModel: MainViewModel) {
                         HorizontalDivider(color = cardBorder, thickness = 1.dp)
 
                         // Linhas da Tabela
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            for (split in displaySplits) {
-                                StravaSplitRow(
-                                    label = split.splitLabel,
-                                    paceSec = split.paceSecPerKm,
-                                    durationSec = split.durationSec,
-                                    avgHr = split.avgHr,
-                                    phaseTag = split.phaseTag,
-                                    basePaceSec = effectivePaceSec,
-                                    primaryText = primaryText,
-                                    secondaryText = secondaryText,
-                                    brandAccent = brandAccent,
-                                    isLight = isLightReport
-                                )
+                        if (displaySplits.isEmpty()) {
+                            Text(
+                                text = "Parciais indisponíveis",
+                                color = secondaryText,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp)
+                            )
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                for (split in displaySplits) {
+                                    StravaSplitRow(
+                                        label = split.splitLabel,
+                                        paceSec = split.paceSecPerKm,
+                                        durationSec = split.durationSec,
+                                        avgHr = split.avgHr,
+                                        phaseTag = split.phaseTag,
+                                        basePaceSec = effectivePaceSec,
+                                        primaryText = primaryText,
+                                        secondaryText = secondaryText,
+                                        brandAccent = brandAccent,
+                                        isLight = isLightReport
+                                    )
+                                }
                             }
                         }
                     }

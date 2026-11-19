@@ -301,8 +301,10 @@ fun RunDossierMasterHeaderAnd2x3Grid(
                 val totalM = dossier.totalDurationWithWarmupSeconds / 60
                 val totalS = dossier.totalDurationWithWarmupSeconds % 60
                 val totalTimeStr = String.format(Locale.US, "%02d:%02d", totalM, totalS)
+                val warmupCalStr = if (dossier.isWeightMissingForCalories) "Peso não informado" else "${dossier.totalCaloriesWithWarmupKcal} kcal"
+                val warmupStepsStr = if (dossier.totalStepsWithWarmup > 0) "${dossier.totalStepsWithWarmup} passos" else "-- passos"
                 Text(
-                    text = "Total c/ Aq.+Desaq.: $totalDistStr ($totalTimeStr • ${dossier.totalCaloriesWithWarmupKcal} kcal • ${dossier.totalStepsWithWarmup} passos)",
+                    text = "Total c/ Aq.+Desaq.: $totalDistStr ($totalTimeStr • $warmupCalStr • $warmupStepsStr)",
                     color = secondaryText,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
@@ -391,7 +393,7 @@ fun RunDossierMasterHeaderAnd2x3Grid(
                         modifier = Modifier.weight(1f)
                     )
                     DossierGridMetricCell(
-                        value = String.format(ptBr, "%,d", dossier.totalSteps),
+                        value = if (dossier.totalSteps > 0) String.format(ptBr, "%,d", dossier.totalSteps) else "--",
                         label = "Passos",
                         valueColor = primaryText,
                         labelColor = secondaryText,
@@ -458,7 +460,8 @@ fun RunDossierHeartRateCard(
     val secondaryText = if (isLightMode) Color(0xFF64748B) else DossierTextSecondaryDark
 
     val samples = dossier.telemetrySamples
-    var selectedSampleIdx by remember(samples) { mutableStateOf<Int?>(null) }
+    val hrSamples = remember(samples) { samples.filter { it.heartRateBpm > 0 } }
+    var selectedSampleIdx by remember(hrSamples) { mutableStateOf<Int?>(null) }
     var chartWidthPx by remember { mutableFloatStateOf(1f) }
 
     val xLabels = remember(dossier.durationSeconds) {
@@ -534,8 +537,13 @@ fun RunDossierHeartRateCard(
                             if (dossier.avgHeartRateBpm <= 0) DossierBlue.copy(alpha = 0.4f) else DossierGreen.copy(alpha = 0.4f)
                         )
                     ) {
+                        val hrBadgeLabel = if (dossier.avgHeartRateBpm <= 0) {
+                            "Sem dados de FC"
+                        } else {
+                            dossier.dataSourceLabel.substringAfter("GPS + ", dossier.dataSourceLabel.substringAfter("• ", "FC registrada"))
+                        }
                         Text(
-                            text = if (dossier.avgHeartRateBpm <= 0) "Sem sensor BLE" else "Sensor BLE",
+                            text = hrBadgeLabel,
                             color = if (dossier.avgHeartRateBpm <= 0) DossierCyan else DossierGreen,
                             fontSize = 9.5.sp,
                             fontWeight = FontWeight.Bold,
@@ -638,7 +646,7 @@ fun RunDossierHeartRateCard(
                 }
 
                 // Tooltip ao tocar/arrastar no gráfico
-                val activeSample = selectedSampleIdx?.let { samples.getOrNull(it) }
+                val activeSample = selectedSampleIdx?.let { hrSamples.getOrNull(it) }
                 if (activeSample != null) {
                     val m = activeSample.elapsedSeconds / 60
                     val s = activeSample.elapsedSeconds % 60
@@ -661,115 +669,135 @@ fun RunDossierHeartRateCard(
             }
 
             // 3. Gráfico de Linha Contínua (Canvas) com Linha Tracejada da FC Média
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                val minBpmAxis = 85
-                val maxBpmAxis = maxOf(190, ((dossier.maxHeartRateBpm + 9) / 10) * 10)
-                val midBpmAxis = (minBpmAxis + maxBpmAxis) / 2
-
-                Row(
+            if (hrSamples.size < 2) {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(148.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .height(104.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isLightMode) Color(0xFFF1F5F9) else Color(0xFF10141D)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .onSizeChanged { chartWidthPx = it.width.toFloat().coerceAtLeast(1f) }
-                            .pointerInput(samples) {
-                                detectTapGestures { offset ->
-                                    if (samples.isNotEmpty()) {
-                                        val frac = (offset.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
-                                        selectedSampleIdx = (frac * (samples.size - 1)).safeRoundToInt().safeCoerceIn(0, samples.lastIndex.coerceAtLeast(0))
-                                    }
-                                }
-                            }
-                            .pointerInput(samples) {
-                                detectHorizontalDragGestures(
-                                    onDragEnd = { selectedSampleIdx = null },
-                                    onDragCancel = { selectedSampleIdx = null }
-                                ) { change, _ ->
-                                    change.consume()
-                                    if (samples.isNotEmpty()) {
-                                        val frac = (change.position.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
-                                        selectedSampleIdx = (frac * (samples.size - 1)).safeRoundToInt().safeCoerceIn(0, samples.lastIndex.coerceAtLeast(0))
-                                    }
-                                }
-                            }
-                    ) {
-                        ContinuousHrLineCanvas(
-                            samples = samples,
-                            avgHr = dossier.avgHeartRateBpm,
-                            minBpmAxis = minBpmAxis.toFloat(),
-                            maxBpmAxis = maxBpmAxis.toFloat(),
-                            selectedIdx = selectedSampleIdx,
-                            isLightMode = isLightMode
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Eixo Y compacto à direita
-                    Column(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(30.dp),
-                        verticalArrangement = Arrangement.SpaceBetween,
-                        horizontalAlignment = Alignment.End
-                    ) {
-                        Text(
-                            text = "$maxBpmAxis",
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = if (dossier.avgHeartRateBpm > 0) "${dossier.avgHeartRateBpm}" else "--",
-                            color = DossierRed.copy(alpha = 0.9f),
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = "$midBpmAxis",
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = "$minBpmAxis",
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
+                    Text(
+                        text = "Sem dados de FC",
+                        color = secondaryText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
-
-                // Marcações de tempo no Eixo X
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(end = 38.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    xLabels.forEach { tick ->
-                        Text(
-                            text = tick,
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            softWrap = false
-                        )
+                    val minSampleBpm = hrSamples.minOf { it.heartRateBpm }
+                    val maxSampleBpm = hrSamples.maxOf { it.heartRateBpm }
+                    val minBpmAxis = minOf(85, ((minSampleBpm - 5) / 10) * 10).coerceAtLeast(40)
+                    val maxBpmAxis = maxOf(minBpmAxis + 30, ((maxOf(dossier.maxHeartRateBpm, maxSampleBpm) + 9) / 10) * 10)
+                    val midBpmAxis = (minBpmAxis + maxBpmAxis) / 2
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(148.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .onSizeChanged { chartWidthPx = it.width.toFloat().coerceAtLeast(1f) }
+                                .pointerInput(hrSamples) {
+                                    detectTapGestures { offset ->
+                                        if (hrSamples.size >= 2) {
+                                            val frac = (offset.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
+                                            selectedSampleIdx = (frac * (hrSamples.size - 1)).safeRoundToInt().safeCoerceIn(0, hrSamples.lastIndex)
+                                        }
+                                    }
+                                }
+                                .pointerInput(hrSamples) {
+                                    detectHorizontalDragGestures(
+                                        onDragEnd = { selectedSampleIdx = null },
+                                        onDragCancel = { selectedSampleIdx = null }
+                                    ) { change, _ ->
+                                        change.consume()
+                                        if (hrSamples.size >= 2) {
+                                            val frac = (change.position.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
+                                            selectedSampleIdx = (frac * (hrSamples.size - 1)).safeRoundToInt().safeCoerceIn(0, hrSamples.lastIndex)
+                                        }
+                                    }
+                                }
+                        ) {
+                            ContinuousHrLineCanvas(
+                                samples = hrSamples,
+                                avgHr = dossier.avgHeartRateBpm,
+                                minBpmAxis = minBpmAxis.toFloat(),
+                                maxBpmAxis = maxBpmAxis.toFloat(),
+                                selectedIdx = selectedSampleIdx,
+                                isLightMode = isLightMode
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Eixo Y compacto à direita
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(30.dp),
+                            verticalArrangement = Arrangement.SpaceBetween,
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text(
+                                text = "$maxBpmAxis",
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = if (dossier.avgHeartRateBpm > 0) "${dossier.avgHeartRateBpm}" else "--",
+                                color = DossierRed.copy(alpha = 0.9f),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = "$midBpmAxis",
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = "$minBpmAxis",
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    // Marcações de tempo no Eixo X
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(end = 38.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        xLabels.forEach { tick ->
+                            Text(
+                                text = tick,
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }
@@ -805,7 +833,18 @@ fun RunDossierHeartRateCard(
                     )
                 }
 
-                dossier.hrZones5.forEach { zoneItem ->
+                if (dossier.hrZones5.isEmpty() || dossier.hrZones5.all { it.percentage <= 0f }) {
+                    Text(
+                        text = "Sem dados de FC",
+                        color = secondaryText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp)
+                    )
+                } else dossier.hrZones5.forEach { zoneItem ->
                     val rawColor = Color(zoneItem.colorHex)
                     val barColor = if (isLightMode && zoneItem.colorHex == 0xFFFFCA28L) {
                         Color(0xFFD97706)
@@ -1021,25 +1060,30 @@ fun RunDossierPaceAreaChartCard(
     val secondaryText = if (isLightMode) Color(0xFF64748B) else DossierTextSecondaryDark
 
     val samples = dossier.telemetrySamples
-    var selectedSampleIdx by remember(samples) { mutableStateOf<Int?>(null) }
+    val paceSamples = remember(samples) { samples.filter { it.paceSecPerKm > 0f } }
+    var selectedSampleIdx by remember(paceSamples) { mutableStateOf<Int?>(null) }
     var chartWidthPx by remember { mutableFloatStateOf(1f) }
 
     val xLabels = remember(dossier.durationSeconds) {
         buildFourTimeMarkers(dossier.durationSeconds)
     }
 
-    val fastestPaceSec = remember(samples, dossier.maxPaceSecPerKm) {
-        val rawFastest = minOf(
-            dossier.maxPaceSecPerKm.takeIf { it > 0 } ?: 360,
-            samples.minOfOrNull { it.paceSecPerKm.safeRoundToInt() }?.takeIf { it > 0 } ?: (dossier.maxPaceSecPerKm.takeIf { it > 0 } ?: 360)
-        )
-        rawFastest.safeCoerceIn(150, 780)
+    val fastestPaceSec = remember(paceSamples, dossier.maxPaceSecPerKm) {
+        val sampleMin = paceSamples.minOfOrNull { it.paceSecPerKm.safeRoundToInt() }
+        val rawFastest = listOfNotNull(
+            dossier.maxPaceSecPerKm.takeIf { it > 0 },
+            sampleMin?.takeIf { it > 0 }
+        ).minOrNull() ?: 0
+        if (rawFastest > 0) rawFastest.safeCoerceIn(140, 3600) else 0
     }
-    val slowestPaceSec = remember(samples, dossier.avgPaceSecPerKm, fastestPaceSec) {
-        maxOf(
-            (dossier.avgPaceSecPerKm.takeIf { it > 0 }?.let { (it * 1.45f).safeRoundToInt() } ?: 660),
-            samples.maxOfOrNull { it.paceSecPerKm.safeRoundToInt() } ?: 660
-        ).safeCoerceIn(fastestPaceSec + 90, maxOf(fastestPaceSec + 90, 960))
+    val slowestPaceSec = remember(paceSamples, dossier.avgPaceSecPerKm, fastestPaceSec) {
+        if (fastestPaceSec <= 0) {
+            0
+        } else {
+            val sampleMax = paceSamples.maxOfOrNull { it.paceSecPerKm.safeRoundToInt() } ?: fastestPaceSec
+            val avgBound = dossier.avgPaceSecPerKm.takeIf { it > 0 }?.let { (it * 1.25f).safeRoundToInt() } ?: sampleMax
+            maxOf(sampleMax, avgBound, fastestPaceSec + 30).safeCoerceIn(fastestPaceSec + 30, maxOf(fastestPaceSec + 30, 3600))
+        }
     }
 
     Card(
@@ -1193,7 +1237,7 @@ fun RunDossierPaceAreaChartCard(
                     }
                 }
 
-                val activeSample = selectedSampleIdx?.let { samples.getOrNull(it) }
+                val activeSample = selectedSampleIdx?.let { paceSamples.getOrNull(it) }
                 if (activeSample != null) {
                     val m = activeSample.elapsedSeconds / 60
                     val s = activeSample.elapsedSeconds % 60
@@ -1217,105 +1261,123 @@ fun RunDossierPaceAreaChartCard(
             }
 
             // 3. Gráfico de Área Invertido (Ritmos mais rápidos ficam mais altos no topo)
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Row(
+            if (paceSamples.size < 2 || fastestPaceSec <= 0 || slowestPaceSec <= 0) {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(148.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .height(104.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isLightMode) Color(0xFFF1F5F9) else Color(0xFF10141D)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .onSizeChanged { chartWidthPx = it.width.toFloat().coerceAtLeast(1f) }
-                            .pointerInput(samples) {
-                                detectTapGestures { offset ->
-                                    if (samples.isNotEmpty()) {
-                                        val frac = (offset.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
-                                        selectedSampleIdx = (frac * (samples.size - 1)).safeRoundToInt().safeCoerceIn(0, samples.lastIndex.coerceAtLeast(0))
-                                    }
-                                }
-                            }
-                            .pointerInput(samples) {
-                                detectHorizontalDragGestures(
-                                    onDragEnd = { selectedSampleIdx = null },
-                                    onDragCancel = { selectedSampleIdx = null }
-                                ) { change, _ ->
-                                    change.consume()
-                                    if (samples.isNotEmpty()) {
-                                        val frac = (change.position.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
-                                        selectedSampleIdx = (frac * (samples.size - 1)).safeRoundToInt().safeCoerceIn(0, samples.lastIndex.coerceAtLeast(0))
-                                    }
-                                }
-                            }
-                    ) {
-                        InvertedPaceAreaCanvas(
-                            samples = samples,
-                            avgPaceSecPerKm = dossier.avgPaceSecPerKm.toFloat(),
-                            fastestPaceSec = fastestPaceSec.toFloat(),
-                            slowestPaceSec = slowestPaceSec.toFloat(),
-                            selectedIdx = selectedSampleIdx,
-                            isLightMode = isLightMode
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Eixo Y invertido à direita (Topo = Ritmo máx mais rápido; Base = Caminhada mais lenta)
-                    Column(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(42.dp),
-                        verticalArrangement = Arrangement.SpaceBetween,
-                        horizontalAlignment = Alignment.End
-                    ) {
-                        Text(
-                            text = formatPaceMinSecQuote(fastestPaceSec),
-                            color = DossierGreen,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = dossier.formattedAvgPace,
-                            color = DossierCyan,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = formatPaceMinSecQuote(slowestPaceSec),
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
+                    Text(
+                        text = "Sem dados de ritmo",
+                        color = secondaryText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
-
-                // Marcações de tempo no Eixo X
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(end = 50.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    xLabels.forEach { tick ->
-                        Text(
-                            text = tick,
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            softWrap = false
-                        )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(148.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .onSizeChanged { chartWidthPx = it.width.toFloat().coerceAtLeast(1f) }
+                                .pointerInput(paceSamples) {
+                                    detectTapGestures { offset ->
+                                        if (paceSamples.size >= 2) {
+                                            val frac = (offset.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
+                                            selectedSampleIdx = (frac * (paceSamples.size - 1)).safeRoundToInt().safeCoerceIn(0, paceSamples.lastIndex)
+                                        }
+                                    }
+                                }
+                                .pointerInput(paceSamples) {
+                                    detectHorizontalDragGestures(
+                                        onDragEnd = { selectedSampleIdx = null },
+                                        onDragCancel = { selectedSampleIdx = null }
+                                    ) { change, _ ->
+                                        change.consume()
+                                        if (paceSamples.size >= 2) {
+                                            val frac = (change.position.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
+                                            selectedSampleIdx = (frac * (paceSamples.size - 1)).safeRoundToInt().safeCoerceIn(0, paceSamples.lastIndex)
+                                        }
+                                    }
+                                }
+                        ) {
+                            InvertedPaceAreaCanvas(
+                                samples = paceSamples,
+                                avgPaceSecPerKm = dossier.avgPaceSecPerKm.toFloat(),
+                                fastestPaceSec = fastestPaceSec.toFloat(),
+                                slowestPaceSec = slowestPaceSec.toFloat(),
+                                selectedIdx = selectedSampleIdx,
+                                isLightMode = isLightMode
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Eixo Y invertido à direita (Topo = Ritmo máx mais rápido; Base = Caminhada mais lenta)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(42.dp),
+                            verticalArrangement = Arrangement.SpaceBetween,
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text(
+                                text = formatPaceMinSecQuote(fastestPaceSec),
+                                color = DossierGreen,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = dossier.formattedAvgPace,
+                                color = DossierCyan,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = formatPaceMinSecQuote(slowestPaceSec),
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    // Marcações de tempo no Eixo X
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(end = 50.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        xLabels.forEach { tick ->
+                            Text(
+                                text = tick,
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }
@@ -1603,19 +1665,32 @@ fun RunDossierPacePerKmCard(
             HorizontalDivider(color = cardBorder, thickness = 1.dp)
 
             // Linhas de Barras Horizontais por Km
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                splits.forEach { split ->
-                    KmSplitHorizontalBarRow(
-                        split = split,
-                        fastestPaceSec = fastestPace,
-                        slowestPaceSec = slowestPace,
-                        primaryText = primaryText,
-                        secondaryText = secondaryText,
-                        isLightMode = isLightMode
-                    )
+            if (splits.isEmpty()) {
+                Text(
+                    text = "Parciais indisponíveis",
+                    color = secondaryText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp)
+                )
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    splits.forEach { split ->
+                        KmSplitHorizontalBarRow(
+                            split = split,
+                            fastestPaceSec = fastestPace,
+                            slowestPaceSec = slowestPace,
+                            primaryText = primaryText,
+                            secondaryText = secondaryText,
+                            isLightMode = isLightMode
+                        )
+                    }
                 }
             }
         }
@@ -1763,20 +1838,25 @@ fun RunDossierCadenceCard(
     val accentOrange = if (isLightMode) Color(0xFFEA580C) else DossierOrange
 
     val samples = dossier.telemetrySamples
-    var selectedSampleIdx by remember(samples) { mutableStateOf<Int?>(null) }
+    val cadenceSamples = remember(samples) { samples.filter { it.cadenceSpm > 0 } }
+    var selectedSampleIdx by remember(cadenceSamples) { mutableStateOf<Int?>(null) }
     var chartWidthPx by remember { mutableFloatStateOf(1f) }
 
     val xLabels = remember(dossier.durationSeconds) {
         buildFourTimeMarkers(dossier.durationSeconds)
     }
 
-    val minCadenceAxis = remember(samples) {
-        val rawMin = samples.minOfOrNull { it.cadenceSpm } ?: 110
-        ((rawMin - 10) / 5 * 5).safeCoerceIn(90, 130)
+    val minCadenceAxis = remember(cadenceSamples) {
+        val rawMin = cadenceSamples.minOfOrNull { it.cadenceSpm } ?: 0
+        if (rawMin > 0) ((rawMin - 10) / 5 * 5).safeCoerceIn(70, 160) else 0
     }
-    val maxCadenceAxis = remember(samples, dossier.maxCadenceSpm, minCadenceAxis) {
-        val rawMax = maxOf(dossier.maxCadenceSpm, samples.maxOfOrNull { it.cadenceSpm } ?: 175)
-        (((rawMax + 10) / 5) * 5).safeCoerceIn(minCadenceAxis + 40, maxOf(minCadenceAxis + 40, 210))
+    val maxCadenceAxis = remember(cadenceSamples, dossier.maxCadenceSpm, minCadenceAxis) {
+        if (minCadenceAxis <= 0) {
+            0
+        } else {
+            val rawMax = maxOf(dossier.maxCadenceSpm, cadenceSamples.maxOfOrNull { it.cadenceSpm } ?: minCadenceAxis)
+            (((rawMax + 10) / 5) * 5).safeCoerceIn(minCadenceAxis + 30, maxOf(minCadenceAxis + 30, 230))
+        }
     }
 
     Card(
@@ -1860,7 +1940,7 @@ fun RunDossierCadenceCard(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                text = "${dossier.avgCadenceSpm}",
+                                text = if (dossier.avgCadenceSpm > 0) "${dossier.avgCadenceSpm}" else "--",
                                 color = primaryText,
                                 fontSize = 26.sp,
                                 lineHeight = 28.sp,
@@ -1894,7 +1974,7 @@ fun RunDossierCadenceCard(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                text = "${dossier.maxCadenceSpm}",
+                                text = if (dossier.maxCadenceSpm > 0) "${dossier.maxCadenceSpm}" else "--",
                                 color = accentAmber,
                                 fontSize = 26.sp,
                                 lineHeight = 28.sp,
@@ -1923,7 +2003,7 @@ fun RunDossierCadenceCard(
                     }
                 }
 
-                val activeSample = selectedSampleIdx?.let { samples.getOrNull(it) }
+                val activeSample = selectedSampleIdx?.let { cadenceSamples.getOrNull(it) }
                 if (activeSample != null) {
                     val m = activeSample.elapsedSeconds / 60
                     val s = activeSample.elapsedSeconds % 60
@@ -1946,105 +2026,123 @@ fun RunDossierCadenceCard(
             }
 
             // 3. Gráfico de Dispersão / Segmentos de Cadência
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Row(
+            if (cadenceSamples.size < 2 || minCadenceAxis <= 0 || maxCadenceAxis <= 0) {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(144.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .height(100.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isLightMode) Color(0xFFF1F5F9) else Color(0xFF10141D)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .onSizeChanged { chartWidthPx = it.width.toFloat().coerceAtLeast(1f) }
-                            .pointerInput(samples) {
-                                detectTapGestures { offset ->
-                                    if (samples.isNotEmpty()) {
-                                        val frac = (offset.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
-                                        selectedSampleIdx = (frac * (samples.size - 1)).safeRoundToInt().safeCoerceIn(0, samples.lastIndex.coerceAtLeast(0))
-                                    }
-                                }
-                            }
-                            .pointerInput(samples) {
-                                detectHorizontalDragGestures(
-                                    onDragEnd = { selectedSampleIdx = null },
-                                    onDragCancel = { selectedSampleIdx = null }
-                                ) { change, _ ->
-                                    change.consume()
-                                    if (samples.isNotEmpty()) {
-                                        val frac = (change.position.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
-                                        selectedSampleIdx = (frac * (samples.size - 1)).safeRoundToInt().safeCoerceIn(0, samples.lastIndex.coerceAtLeast(0))
-                                    }
-                                }
-                            }
-                    ) {
-                        CadenceScatterLineCanvas(
-                            samples = samples,
-                            avgCadenceSpm = dossier.avgCadenceSpm.toFloat(),
-                            minCadenceAxis = minCadenceAxis.toFloat(),
-                            maxCadenceAxis = maxCadenceAxis.toFloat(),
-                            selectedIdx = selectedSampleIdx,
-                            isLightMode = isLightMode
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Eixo Y compacto à direita
-                    Column(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(34.dp),
-                        verticalArrangement = Arrangement.SpaceBetween,
-                        horizontalAlignment = Alignment.End
-                    ) {
-                        Text(
-                            text = "$maxCadenceAxis",
-                            color = accentAmber,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = "${dossier.avgCadenceSpm}",
-                            color = accentOrange,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = "$minCadenceAxis",
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
+                    Text(
+                        text = "Sem dados de cadência",
+                        color = secondaryText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
-
-                // Marcações de tempo no Eixo X
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(end = 42.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    xLabels.forEach { tick ->
-                        Text(
-                            text = tick,
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            softWrap = false
-                        )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(144.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .onSizeChanged { chartWidthPx = it.width.toFloat().coerceAtLeast(1f) }
+                                .pointerInput(cadenceSamples) {
+                                    detectTapGestures { offset ->
+                                        if (cadenceSamples.size >= 2) {
+                                            val frac = (offset.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
+                                            selectedSampleIdx = (frac * (cadenceSamples.size - 1)).safeRoundToInt().safeCoerceIn(0, cadenceSamples.lastIndex)
+                                        }
+                                    }
+                                }
+                                .pointerInput(cadenceSamples) {
+                                    detectHorizontalDragGestures(
+                                        onDragEnd = { selectedSampleIdx = null },
+                                        onDragCancel = { selectedSampleIdx = null }
+                                    ) { change, _ ->
+                                        change.consume()
+                                        if (cadenceSamples.size >= 2) {
+                                            val frac = (change.position.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
+                                            selectedSampleIdx = (frac * (cadenceSamples.size - 1)).safeRoundToInt().safeCoerceIn(0, cadenceSamples.lastIndex)
+                                        }
+                                    }
+                                }
+                        ) {
+                            CadenceScatterLineCanvas(
+                                samples = cadenceSamples,
+                                avgCadenceSpm = dossier.avgCadenceSpm.toFloat(),
+                                minCadenceAxis = minCadenceAxis.toFloat(),
+                                maxCadenceAxis = maxCadenceAxis.toFloat(),
+                                selectedIdx = selectedSampleIdx,
+                                isLightMode = isLightMode
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Eixo Y compacto à direita
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(34.dp),
+                            verticalArrangement = Arrangement.SpaceBetween,
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text(
+                                text = "$maxCadenceAxis",
+                                color = accentAmber,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = if (dossier.avgCadenceSpm > 0) "${dossier.avgCadenceSpm}" else "--",
+                                color = accentOrange,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = "$minCadenceAxis",
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    // Marcações de tempo no Eixo X
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(end = 42.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        xLabels.forEach { tick ->
+                            Text(
+                                text = tick,
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }
@@ -2192,20 +2290,25 @@ fun RunDossierStrideLengthCard(
     val accentOrange = if (isLightMode) Color(0xFFEA580C) else DossierOrange
 
     val samples = dossier.telemetrySamples
-    var selectedSampleIdx by remember(samples) { mutableStateOf<Int?>(null) }
+    val strideSamples = remember(samples) { samples.filter { it.strideLengthCm > 0 } }
+    var selectedSampleIdx by remember(strideSamples) { mutableStateOf<Int?>(null) }
     var chartWidthPx by remember { mutableFloatStateOf(1f) }
 
     val xLabels = remember(dossier.durationSeconds) {
         buildFourTimeMarkers(dossier.durationSeconds)
     }
 
-    val minStrideAxis = remember(samples) {
-        val rawMin = samples.minOfOrNull { it.strideLengthCm } ?: 65
-        ((rawMin - 8) / 5 * 5).safeCoerceIn(45, 85)
+    val minStrideAxis = remember(strideSamples) {
+        val rawMin = strideSamples.minOfOrNull { it.strideLengthCm } ?: 0
+        if (rawMin > 0) ((rawMin - 8) / 5 * 5).safeCoerceIn(35, 110) else 0
     }
-    val maxStrideAxis = remember(samples, dossier.maxStrideLengthCm, minStrideAxis) {
-        val rawMax = maxOf(dossier.maxStrideLengthCm, samples.maxOfOrNull { it.strideLengthCm } ?: 115)
-        (((rawMax + 8) / 5) * 5).safeCoerceIn(minStrideAxis + 25, maxOf(minStrideAxis + 25, 160))
+    val maxStrideAxis = remember(strideSamples, dossier.maxStrideLengthCm, minStrideAxis) {
+        if (minStrideAxis <= 0) {
+            0
+        } else {
+            val rawMax = maxOf(dossier.maxStrideLengthCm, strideSamples.maxOfOrNull { it.strideLengthCm } ?: minStrideAxis)
+            (((rawMax + 8) / 5) * 5).safeCoerceIn(minStrideAxis + 25, maxOf(minStrideAxis + 25, 220))
+        }
     }
 
     Card(
@@ -2289,7 +2392,7 @@ fun RunDossierStrideLengthCard(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                text = "${dossier.avgStrideLengthCm}",
+                                text = if (dossier.avgStrideLengthCm > 0) "${dossier.avgStrideLengthCm}" else "--",
                                 color = primaryText,
                                 fontSize = 26.sp,
                                 lineHeight = 28.sp,
@@ -2323,7 +2426,7 @@ fun RunDossierStrideLengthCard(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                text = "${dossier.maxStrideLengthCm}",
+                                text = if (dossier.maxStrideLengthCm > 0) "${dossier.maxStrideLengthCm}" else "--",
                                 color = accentAmber,
                                 fontSize = 26.sp,
                                 lineHeight = 28.sp,
@@ -2352,7 +2455,7 @@ fun RunDossierStrideLengthCard(
                     }
                 }
 
-                val activeSample = selectedSampleIdx?.let { samples.getOrNull(it) }
+                val activeSample = selectedSampleIdx?.let { strideSamples.getOrNull(it) }
                 if (activeSample != null) {
                     val m = activeSample.elapsedSeconds / 60
                     val s = activeSample.elapsedSeconds % 60
@@ -2375,105 +2478,123 @@ fun RunDossierStrideLengthCard(
             }
 
             // 3. Gráfico de Curva de Passada em Canvas
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Row(
+            if (strideSamples.size < 2 || minStrideAxis <= 0 || maxStrideAxis <= 0) {
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(144.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .height(100.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isLightMode) Color(0xFFF1F5F9) else Color(0xFF10141D)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .onSizeChanged { chartWidthPx = it.width.toFloat().coerceAtLeast(1f) }
-                            .pointerInput(samples) {
-                                detectTapGestures { offset ->
-                                    if (samples.isNotEmpty()) {
-                                        val frac = (offset.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
-                                        selectedSampleIdx = (frac * (samples.size - 1)).safeRoundToInt().safeCoerceIn(0, samples.lastIndex.coerceAtLeast(0))
-                                    }
-                                }
-                            }
-                            .pointerInput(samples) {
-                                detectHorizontalDragGestures(
-                                    onDragEnd = { selectedSampleIdx = null },
-                                    onDragCancel = { selectedSampleIdx = null }
-                                ) { change, _ ->
-                                    change.consume()
-                                    if (samples.isNotEmpty()) {
-                                        val frac = (change.position.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
-                                        selectedSampleIdx = (frac * (samples.size - 1)).safeRoundToInt().safeCoerceIn(0, samples.lastIndex.coerceAtLeast(0))
-                                    }
-                                }
-                            }
-                    ) {
-                        StrideLengthCanvas(
-                            samples = samples,
-                            avgStrideCm = dossier.avgStrideLengthCm.toFloat(),
-                            minStrideAxis = minStrideAxis.toFloat(),
-                            maxStrideAxis = maxStrideAxis.toFloat(),
-                            selectedIdx = selectedSampleIdx,
-                            isLightMode = isLightMode
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Eixo Y compacto à direita
-                    Column(
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .width(34.dp),
-                        verticalArrangement = Arrangement.SpaceBetween,
-                        horizontalAlignment = Alignment.End
-                    ) {
-                        Text(
-                            text = "$maxStrideAxis",
-                            color = accentAmber,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = "${dossier.avgStrideLengthCm}",
-                            color = accentOrange,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = "$minStrideAxis",
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
+                    Text(
+                        text = "Sem dados de passada",
+                        color = secondaryText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
-
-                // Marcações de tempo no Eixo X
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(end = 42.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    xLabels.forEach { tick ->
-                        Text(
-                            text = tick,
-                            color = secondaryText,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            softWrap = false
-                        )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(144.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .onSizeChanged { chartWidthPx = it.width.toFloat().coerceAtLeast(1f) }
+                                .pointerInput(strideSamples) {
+                                    detectTapGestures { offset ->
+                                        if (strideSamples.size >= 2) {
+                                            val frac = (offset.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
+                                            selectedSampleIdx = (frac * (strideSamples.size - 1)).safeRoundToInt().safeCoerceIn(0, strideSamples.lastIndex)
+                                        }
+                                    }
+                                }
+                                .pointerInput(strideSamples) {
+                                    detectHorizontalDragGestures(
+                                        onDragEnd = { selectedSampleIdx = null },
+                                        onDragCancel = { selectedSampleIdx = null }
+                                    ) { change, _ ->
+                                        change.consume()
+                                        if (strideSamples.size >= 2) {
+                                            val frac = (change.position.x / chartWidthPx.coerceAtLeast(1f)).safeCoerceIn(0f, 1f)
+                                            selectedSampleIdx = (frac * (strideSamples.size - 1)).safeRoundToInt().safeCoerceIn(0, strideSamples.lastIndex)
+                                        }
+                                    }
+                                }
+                        ) {
+                            StrideLengthCanvas(
+                                samples = strideSamples,
+                                avgStrideCm = dossier.avgStrideLengthCm.toFloat(),
+                                minStrideAxis = minStrideAxis.toFloat(),
+                                maxStrideAxis = maxStrideAxis.toFloat(),
+                                selectedIdx = selectedSampleIdx,
+                                isLightMode = isLightMode
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Eixo Y compacto à direita
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(34.dp),
+                            verticalArrangement = Arrangement.SpaceBetween,
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text(
+                                text = "$maxStrideAxis",
+                                color = accentAmber,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = if (dossier.avgStrideLengthCm > 0) "${dossier.avgStrideLengthCm}" else "--",
+                                color = accentOrange,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = "$minStrideAxis",
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    // Marcações de tempo no Eixo X
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(end = 42.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        xLabels.forEach { tick ->
+                            Text(
+                                text = tick,
+                                color = secondaryText,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                     }
                 }
             }
@@ -2715,8 +2836,8 @@ fun RunDossierTrainingEffectAndSourceCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "+${dossier.vitalityScoreGain}",
-                        color = DossierGreen,
+                        text = if (dossier.vitalityScoreGain > 0) "+${dossier.vitalityScoreGain}" else "--",
+                        color = if (dossier.vitalityScoreGain > 0) DossierGreen else secondaryText,
                         fontSize = 30.sp,
                         lineHeight = 32.sp,
                         fontWeight = FontWeight.Black,
@@ -2752,8 +2873,13 @@ fun RunDossierTrainingEffectAndSourceCard(
                 }
 
                 // Índice de Consistência Anti-Quebra (Comparação 1º Bloco/Tiro vs. Último Bloco/Tiro)
-                val isFadeAlert = dossier.paceFadePct > 10.0f
-                val consistencyAccent = if (isFadeAlert) Color(0xFFFFB300) else DossierGreen
+                val hasConsistencyMetrics = dossier.firstIntervalPaceSecPerKm > 0 && dossier.lastIntervalPaceSecPerKm > 0
+                val isFadeAlert = hasConsistencyMetrics && dossier.paceFadePct > 10.0f
+                val consistencyAccent = when {
+                    !hasConsistencyMetrics -> secondaryText
+                    isFadeAlert -> Color(0xFFFFB300)
+                    else -> DossierGreen
+                }
                 Surface(
                     color = consistencyAccent.copy(alpha = 0.10f),
                     shape = RoundedCornerShape(10.dp),
@@ -2868,6 +2994,40 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
 
     val carbOrange = Color(0xFFFF6B00)
     val fatBlue = Color(0xFF00B4D8)
+
+    val hasValidHrForSubstrate = dossier.avgHeartRateBpm > 0 && dossier.hrZones5.isNotEmpty()
+    if (!hasValidHrForSubstrate) {
+        Card(
+            modifier = modifier
+                .fillMaxWidth()
+                .testTag("run_dossier_endurance_substrate_lt1_lt2_card"),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = cardBg),
+            border = BorderStroke(1.dp, cardBorder)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "FISIOLOGIA & SUBSTRATO ENERGÉTICO (LT1 / LT2)",
+                    color = primaryText,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.4.sp
+                )
+                Text(
+                    text = "Sem dados de FC para calcular limiares (LT1/LT2) e substrato energético.",
+                    color = secondaryText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+        return
+    }
 
     val profile = remember(dossier) {
         com.example.data.model.calculateEndurancePhysiologyProfile(dossier)
