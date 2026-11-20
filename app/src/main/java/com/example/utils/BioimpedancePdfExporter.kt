@@ -111,10 +111,10 @@ object BioimpedancePdfExporter {
         context: Context,
         activeRecord: BioimpedanceRecord,
         allRecords: List<BioimpedanceRecord>,
-        athleteName: String = "Esnaider",
+        athleteName: String = "Atleta",
         athleteAge: Int?,
         heightCm: Int?,
-        waterGoalLabel: String = "4,2 L/dia"
+        waterGoalLabel: String = "Não definida"
     ) {
         runCatching {
             val sortedChronological = if (allRecords.isEmpty()) {

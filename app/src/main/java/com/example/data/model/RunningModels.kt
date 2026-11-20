@@ -1606,25 +1606,29 @@ fun calculateSprintAnalytics(
 }
 
 /**
- * Auto-calibra a FC Máxima efetiva (`effectiveMaxHr`) combinando a fórmula etária (220 - idade)
- * com o pico real medido na sessão (`sessionMaxHrBpm`, ex: cinta peitoral ECG) e o pico histórico (`historicalPeakHrBpm`).
- * Garante que um atleta com 184 bpm de pico em esforço controlado tenha teto calibrado (ex: 188 bpm, 98% da FCmáx)
- * em vez de "108% da FCmáx estimada de 170 bpm".
+ * Calcula a FC Máxima efetiva (`effectiveMaxHr`) com a seguinte precedência:
+ * 1. Calibração explícita salva no perfil (`calibratedMaxHrBpm`), quando válida (100..235 bpm).
+ * 2. Fórmula etária (220 - idade) quando houver idade válida (10..100 anos), ajustada acima do teto
+ *    apenas se um pico real observado superar a fórmula (`maxOf(realObservedPeak + 4, ageFormulaMax)`).
+ * 3. Sem calibração e sem idade válida, retorna `0` (indisponível), nunca tratando pico observado como FCmáx.
  */
 fun calculateEffectiveMaxHr(
     ageYears: Int?,
     sessionMaxHrBpm: Int? = null,
-    historicalPeakHrBpm: Int? = null
+    historicalPeakHrBpm: Int? = null,
+    calibratedMaxHrBpm: Int? = null
 ): Int {
-    val sessionPeak = sessionMaxHrBpm ?: 0
-    val histPeak = historicalPeakHrBpm ?: 0
-    val realObservedPeak = maxOf(sessionPeak, histPeak)
-    val validAge = ageYears?.takeIf { it in 10..100 } ?: return realObservedPeak
+    val calibrated = calibratedMaxHrBpm?.takeIf { it in 100..235 }
+    if (calibrated != null) return calibrated
+
+    val validAge = ageYears?.takeIf { it in 10..100 } ?: return 0
     val safeAge = validAge.coerceIn(18, 80)
     val ageFormulaMax = (220 - safeAge).coerceIn(155, 205)
+    val sessionPeak = sessionMaxHrBpm?.takeIf { it > 0 } ?: 0
+    val histPeak = historicalPeakHrBpm?.takeIf { it > 0 } ?: 0
+    val realObservedPeak = maxOf(sessionPeak, histPeak)
     return when {
-        realObservedPeak > ageFormulaMax -> maxOf(realObservedPeak + 4, 190)
-        safeAge == 50 -> 190
+        realObservedPeak > ageFormulaMax -> maxOf(realObservedPeak + 4, ageFormulaMax)
         realObservedPeak > 0 -> maxOf(ageFormulaMax, realObservedPeak)
         else -> ageFormulaMax
     }
@@ -2270,6 +2274,8 @@ data class RunPhysiologyDossier(
     val avgHeartRateBpm: Int,
     val maxHeartRateBpm: Int,
     val effectiveMaxHeartRateBpm: Int = 0,
+    val calibratedLt1Bpm: Int? = null,
+    val calibratedLt2Bpm: Int? = null,
     val isHrEstimated: Boolean,
     val totalSteps: Int,
     val totalStepsWithWarmup: Int = totalSteps,
@@ -2507,16 +2513,13 @@ fun buildRunPhysiologyDossier(
         )
     }
 
-    // Sem idade no perfil, não assume 30: usa apenas a FC máxima medida da sessão para calibrar as zonas
-    val effectiveMaxHr = if (ageYears != null) {
-        calculateEffectiveMaxHr(
-            ageYears = ageYears,
-            sessionMaxHrBpm = targetMaxHr.takeIf { it > 0 },
-            historicalPeakHrBpm = session.maxHr
-        )
-    } else {
-        targetMaxHr
-    }
+    // Precedência: calibração no perfil -> fórmula etária -> 0 (indisponível)
+    val effectiveMaxHr = calculateEffectiveMaxHr(
+        ageYears = ageYears,
+        sessionMaxHrBpm = targetMaxHr.takeIf { it > 0 },
+        historicalPeakHrBpm = session.maxHr,
+        calibratedMaxHrBpm = userProfile?.fcMaxCalibradaBpm
+    )
 
     val realGpsPoints: List<GpsTrackPoint> = if (gpsPoints.size >= 2) {
         gpsPoints.filter { it.latitude != 0.0 && it.longitude != 0.0 }.sortedBy { it.timestampMs }
@@ -2859,6 +2862,8 @@ fun buildRunPhysiologyDossier(
         avgHeartRateBpm = computedAvgHr,
         maxHeartRateBpm = computedMaxHr,
         effectiveMaxHeartRateBpm = effectiveMaxHr,
+        calibratedLt1Bpm = userProfile?.limiarLt1Bpm,
+        calibratedLt2Bpm = userProfile?.limiarLt2Bpm,
         isHrEstimated = isHrEstimated,
         totalSteps = totalSteps,
         totalStepsWithWarmup = totalStepsWithWarmup,
@@ -2885,15 +2890,14 @@ fun buildRunPhysiologyDossier(
  * Perfil Fisiológico de Resistência baseado no Modelo Científico de 3 Zonas (LT1 / LT2) +
  * 5 Zonas de Joe Friel + Jack Daniels + Oxidação de Substrato Energético (Carboidrato vs. Gordura).
  *
- * Calibrado para FCmáx = 190 bpm (ou proporcional à FCmáx efetiva do atleta):
- * - Zona 1 / Z0-Z2 (<= 72% FCmáx / <= 137 bpm): Abaixo do LT1 • RPE 1-3 • Lactato ~0,7-2,5 mmol/L • Fadiga: Todo o dia / +150 min • 65%-80% Gordura / 20%-35% Carboidrato
- * - Zona 2 / Z3-Z4 (72%-85% FCmáx / 138-161 bpm): Entre LT1 e LT2 • RPE 4-7 • Lactato ~2,0-5,0 mmol/L • Fadiga: ~60 a 150 min • 70%-85% Carboidrato / 15%-30% Gordura
- * - Zona 3 / Z5a-Z5c (85%-100% FCmáx / 162-190 bpm): Acima do LT2 (162 bpm) • RPE 8-10 • Lactato ~5,0-20,0 mmol/L • Fadiga: ~2 a 7 min • 92%-100% Carboidrato (Glicogênio Muscular)
+ * Limiares LT1/LT2 usam a calibração do perfil quando informada, ou 72% e 85,26% da FCmáx efetiva.
+ * Sem FCmáx efetiva (`<= 0`), não calcula limiares nem zonas (`isAvailable = false`).
+ * Com menos de 6 amostras reais de FC, não fabrica distribuição de zonas (`hasZoneDistribution = false`).
  */
 data class EndurancePhysiologyProfile(
-    val calibratedMaxHrBpm: Int = 190,
-    val lt1Bpm: Int = 137,
-    val lt2Bpm: Int = 162,
+    val calibratedMaxHrBpm: Int = 0,
+    val lt1Bpm: Int = 0,
+    val lt2Bpm: Int = 0,
     val carbOxidationPct: Int,
     val fatOxidationPct: Int,
     val carbGramsEstimated: Int,
@@ -2907,41 +2911,83 @@ data class EndurancePhysiologyProfile(
     val belowLt1Pct: Int,
     val betweenLt1Lt2Pct: Int,
     val aboveLt2Pct: Int,
-    val maxGymGlycogenImpact: String
+    val maxGymGlycogenImpact: String,
+    val isAvailable: Boolean = true,
+    val hasZoneDistribution: Boolean = true,
+    val hasCalorieEstimate: Boolean = true
 )
 
-fun calculateEndurancePhysiologyProfile(dossier: RunPhysiologyDossier): EndurancePhysiologyProfile {
-    val maxHr = dossier.effectiveMaxHeartRateBpm.takeIf { it >= 170 } ?: 190
-    val lt1Bpm = if (maxHr == 190) 137 else (maxHr * 0.72f).roundToInt()
-    val lt2Bpm = if (maxHr == 190) 162 else (maxHr * 0.8526f).roundToInt()
+fun calculateEndurancePhysiologyProfile(
+    dossier: RunPhysiologyDossier,
+    userProfile: UserProfileData? = null
+): EndurancePhysiologyProfile {
+    val maxHr = userProfile?.fcMaxCalibradaBpm?.takeIf { it in 100..235 }
+        ?: dossier.effectiveMaxHeartRateBpm.takeIf { it > 0 }
+        ?: 0
 
-    val avgBpm = dossier.avgHeartRateBpm.coerceIn(85, maxHr)
+    if (maxHr <= 0 || dossier.avgHeartRateBpm <= 0) {
+        return EndurancePhysiologyProfile(
+            calibratedMaxHrBpm = 0,
+            lt1Bpm = 0,
+            lt2Bpm = 0,
+            carbOxidationPct = 0,
+            fatOxidationPct = 0,
+            carbGramsEstimated = 0,
+            fatGramsEstimated = 0,
+            predominantZoneBadge = "DADOS INSUFICIENTES",
+            thresholdStatusTitle = "Dados insuficientes (FC máxima indisponível)",
+            frielDanielsClassification = "Informe a idade ou calibração de FCmáx no perfil",
+            estimatedLactateRange = "--",
+            timeToFatigueWindow = "--",
+            rpeRangeLabel = "--",
+            belowLt1Pct = 0,
+            betweenLt1Lt2Pct = 0,
+            aboveLt2Pct = 0,
+            maxGymGlycogenImpact = "Dados insuficientes para calcular limiares (LT1/LT2), zonas e substrato energético.",
+            isAvailable = false,
+            hasZoneDistribution = false,
+            hasCalorieEstimate = false
+        )
+    }
+
+    val lt1Bpm = (userProfile?.limiarLt1Bpm ?: dossier.calibratedLt1Bpm)
+        ?.takeIf { it in 60 until maxHr }
+        ?: (maxHr * 0.72f).roundToInt()
+    val lt2Bpm = (userProfile?.limiarLt2Bpm ?: dossier.calibratedLt2Bpm)
+        ?.takeIf { it in (lt1Bpm + 1)..maxHr }
+        ?: (maxHr * 0.8526f).roundToInt()
+
+    val avgBpm = dossier.avgHeartRateBpm.coerceIn(60, maxHr)
     val peakBpm = dossier.maxHeartRateBpm.coerceAtLeast(avgBpm)
     val samples = dossier.telemetrySamples.map { it.heartRateBpm }.filter { it in 65..230 }
 
-    val (belowLt1Pct, betweenLt1Lt2Pct, aboveLt2Pct) = if (samples.size >= 6) {
+    val hasZoneDistribution = samples.size >= 6
+    val (belowLt1Pct, betweenLt1Lt2Pct, aboveLt2Pct) = if (hasZoneDistribution) {
         val total = samples.size.toFloat()
         val z1 = ((samples.count { it <= lt1Bpm } / total) * 100f).roundToInt()
         val z3 = ((samples.count { it >= lt2Bpm } / total) * 100f).roundToInt()
         val z2 = (100 - z1 - z3).coerceIn(0, 100)
         Triple(z1, z2, z3)
     } else {
-        when {
-            avgBpm <= lt1Bpm -> Triple(76, 20, 4)
-            avgBpm < lt2Bpm && peakBpm >= lt2Bpm -> Triple(12, 58, 30)
-            avgBpm < lt2Bpm -> Triple(18, 74, 8)
-            else -> Triple(6, 36, 58)
-        }
+        Triple(0, 0, 0)
     }
 
-    // Ponderação fisiológica da oxidação de Carboidrato (Glicogênio) vs. Gordura ao longo das 3 zonas (LT1 / LT2)
-    val weightedCarbFloat = (belowLt1Pct * 0.28f) + (betweenLt1Lt2Pct * 0.78f) + (aboveLt2Pct * 0.96f)
-    val carbPct = weightedCarbFloat.roundToInt().coerceIn(22, 98)
-    val fatPct = (100 - carbPct).coerceIn(2, 78)
+    // Ponderação fisiológica da oxidação de Carboidrato (Glicogênio) vs. Gordura apenas com distribuição real (>= 6 amostras)
+    val carbPct: Int
+    val fatPct: Int
+    if (hasZoneDistribution) {
+        val weightedCarbFloat = (belowLt1Pct * 0.28f) + (betweenLt1Lt2Pct * 0.78f) + (aboveLt2Pct * 0.96f)
+        carbPct = weightedCarbFloat.roundToInt().coerceIn(22, 98)
+        fatPct = (100 - carbPct).coerceIn(2, 78)
+    } else {
+        carbPct = 0
+        fatPct = 0
+    }
 
-    val activeKcal = dossier.activeCaloriesKcal.coerceAtLeast(35)
-    val carbGrams = ((activeKcal * (carbPct / 100f)) / 4.0f).roundToInt().coerceAtLeast(4)
-    val fatGrams = ((activeKcal * (fatPct / 100f)) / 9.0f).roundToInt().coerceAtLeast(1)
+    val activeKcal = dossier.activeCaloriesKcal.coerceAtLeast(0)
+    val hasCalorieEstimate = hasZoneDistribution && activeKcal > 0
+    val carbGrams = if (hasCalorieEstimate) ((activeKcal * (carbPct / 100f)) / 4.0f).roundToInt() else 0
+    val fatGrams = if (hasCalorieEstimate) ((activeKcal * (fatPct / 100f)) / 9.0f).roundToInt() else 0
 
     val isNearLt2Border = avgBpm in (lt2Bpm - 5)..(lt2Bpm + 3) && peakBpm >= lt2Bpm
 
@@ -2988,6 +3034,10 @@ fun calculateEndurancePhysiologyProfile(dossier: RunPhysiologyDossier): Enduranc
     }
 
     val maxGymGlycogenImpact = when {
+        !hasZoneDistribution ->
+            "Impacto MAX GYM: Dados insuficientes de FC (< 6 amostras) para estimar oxidação de substrato e depleção de glicogênio."
+        !hasCalorieEstimate ->
+            "Impacto MAX GYM: Predomínio de ${carbPct}% Carboidrato / ${fatPct}% Lipídios (calorias ativas indisponíveis para estimar gramas)."
         carbPct >= 75 ->
             "Impacto MAX GYM: Depleção predominante de Glicogênio Muscular (${carbPct}% Carboidrato / ~${carbGrams}g). Reponha 40g–60g de carboidratos antes do próximo Full Body para preservar força máxima nas máquinas."
         carbPct >= 55 ->
@@ -3013,18 +3063,22 @@ fun calculateEndurancePhysiologyProfile(dossier: RunPhysiologyDossier): Enduranc
         belowLt1Pct = belowLt1Pct,
         betweenLt1Lt2Pct = betweenLt1Lt2Pct,
         aboveLt2Pct = aboveLt2Pct,
-        maxGymGlycogenImpact = maxGymGlycogenImpact
+        maxGymGlycogenImpact = maxGymGlycogenImpact,
+        isAvailable = true,
+        hasZoneDistribution = hasZoneDistribution,
+        hasCalorieEstimate = hasCalorieEstimate
     )
 }
 
 /**
  * Calcula instantaneamente os indicadores de Limiar (LT1/LT2), Lactato, Tempo até a Fadiga e Substrato
  * Energético para o BPM atual no Modal Fullscreen Ao Vivo (`FullscreenHeartRateModal`).
+ * Sem FCmáx efetiva (`<= 0`), não calcula limiares nem zonas (`isAvailable = false`).
  */
 data class LiveBpmEnduranceSnapshot(
-    val calibratedMaxHrBpm: Int = 190,
-    val lt1Bpm: Int = 137,
-    val lt2Bpm: Int = 162,
+    val calibratedMaxHrBpm: Int = 0,
+    val lt1Bpm: Int = 0,
+    val lt2Bpm: Int = 0,
     val zone3ModelLabel: String,
     val frielDanielsLabel: String,
     val lactateEstimateText: String,
@@ -3032,21 +3086,58 @@ data class LiveBpmEnduranceSnapshot(
     val primarySubstrateText: String,
     val carbPct: Int,
     val fatPct: Int,
-    val rpeLabel: String
+    val rpeLabel: String,
+    val isAvailable: Boolean = true
 )
 
 fun calculateLiveBpmEnduranceSnapshot(
     currentBpm: Int,
-    calibratedMaxHr: Int = 190
+    calibratedMaxHr: Int = 0,
+    calibratedLt1Bpm: Int? = null,
+    calibratedLt2Bpm: Int? = null
 ): LiveBpmEnduranceSnapshot {
-    val maxHr = calibratedMaxHr.takeIf { it >= 170 } ?: 190
-    val lt1Bpm = if (maxHr == 190) 137 else (maxHr * 0.72f).roundToInt()
-    val lt2Bpm = if (maxHr == 190) 162 else (maxHr * 0.8526f).roundToInt()
-    val bpm = currentBpm.takeIf { it > 0 } ?: 135
+    if (calibratedMaxHr <= 0) {
+        return LiveBpmEnduranceSnapshot(
+            calibratedMaxHrBpm = 0,
+            lt1Bpm = 0,
+            lt2Bpm = 0,
+            zone3ModelLabel = "DADOS INSUFICIENTES",
+            frielDanielsLabel = "Informe a idade ou calibração de FCmáx no perfil",
+            lactateEstimateText = "--",
+            timeToFatigueText = "--",
+            primarySubstrateText = "Dados insuficientes",
+            carbPct = 0,
+            fatPct = 0,
+            rpeLabel = "--",
+            isAvailable = false
+        )
+    }
+
+    val lt1Bpm = calibratedLt1Bpm?.takeIf { it in 60 until calibratedMaxHr }
+        ?: (calibratedMaxHr * 0.72f).roundToInt()
+    val lt2Bpm = calibratedLt2Bpm?.takeIf { it in (lt1Bpm + 1)..calibratedMaxHr }
+        ?: (calibratedMaxHr * 0.8526f).roundToInt()
+
+    if (currentBpm <= 0) {
+        return LiveBpmEnduranceSnapshot(
+            calibratedMaxHrBpm = calibratedMaxHr,
+            lt1Bpm = lt1Bpm,
+            lt2Bpm = lt2Bpm,
+            zone3ModelLabel = "AGUARDANDO SINAL DE FC",
+            frielDanielsLabel = "Conecte um sensor cardíaco para classificar a zona",
+            lactateEstimateText = "--",
+            timeToFatigueText = "--",
+            primarySubstrateText = "--",
+            carbPct = 0,
+            fatPct = 0,
+            rpeLabel = "--",
+            isAvailable = true
+        )
+    }
 
     return when {
-        bpm <= lt1Bpm -> LiveBpmEnduranceSnapshot(
-            calibratedMaxHrBpm = maxHr,
+        currentBpm <= lt1Bpm -> LiveBpmEnduranceSnapshot(
+            calibratedMaxHrBpm = calibratedMaxHr,
             lt1Bpm = lt1Bpm,
             lt2Bpm = lt2Bpm,
             zone3ModelLabel = "ZONA 1 • ABAIXO DO LT1 (<= $lt1Bpm bpm)",
@@ -3056,10 +3147,11 @@ fun calculateLiveBpmEnduranceSnapshot(
             primarySubstrateText = "65%–80% Gordura / 20%–35% Carboidrato",
             carbPct = 28,
             fatPct = 72,
-            rpeLabel = "RPE 1–3"
+            rpeLabel = "RPE 1–3",
+            isAvailable = true
         )
-        bpm < lt2Bpm -> LiveBpmEnduranceSnapshot(
-            calibratedMaxHrBpm = maxHr,
+        currentBpm < lt2Bpm -> LiveBpmEnduranceSnapshot(
+            calibratedMaxHrBpm = calibratedMaxHr,
             lt1Bpm = lt1Bpm,
             lt2Bpm = lt2Bpm,
             zone3ModelLabel = "ZONA 2 • ENTRE LT1 E LT2 (${lt1Bpm + 1}–${lt2Bpm - 1} bpm)",
@@ -3069,10 +3161,11 @@ fun calculateLiveBpmEnduranceSnapshot(
             primarySubstrateText = "70%–85% Carboidrato (Glicogênio) / 15%–30% Gordura",
             carbPct = 78,
             fatPct = 22,
-            rpeLabel = "RPE 4–7"
+            rpeLabel = "RPE 4–7",
+            isAvailable = true
         )
         else -> LiveBpmEnduranceSnapshot(
-            calibratedMaxHrBpm = maxHr,
+            calibratedMaxHrBpm = calibratedMaxHr,
             lt1Bpm = lt1Bpm,
             lt2Bpm = lt2Bpm,
             zone3ModelLabel = "ZONA 3 • ACIMA DO LT2 (>= $lt2Bpm bpm • VO2máx)",
@@ -3082,7 +3175,8 @@ fun calculateLiveBpmEnduranceSnapshot(
             primarySubstrateText = "92%–100% Carboidrato (Glicogênio Muscular)",
             carbPct = 95,
             fatPct = 5,
-            rpeLabel = "RPE 8–10"
+            rpeLabel = "RPE 8–10",
+            isAvailable = true
         )
     }
 }

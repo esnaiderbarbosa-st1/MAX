@@ -9,7 +9,7 @@ object HealthEngine {
      * Calculates Body Mass Index (BMI).
      */
     fun calculateBMI(weight: Float, heightCm: Int): Float {
-        if (heightCm <= 0) return 0f
+        if (weight <= 0f || heightCm <= 0) return 0f
         val heightM = heightCm / 100f
         return weight / (heightM * heightM)
     }
@@ -46,6 +46,7 @@ object HealthEngine {
      * FCMax = 207 - (0.7 * Age)
      */
     fun calculateHeartRateZones(age: Int): Map<HeartRateZone, ClosedRange<Int>> {
+        if (age !in 10..100) return emptyMap()
         val maxHr = 207f - (0.7f * age)
         return mapOf(
             HeartRateZone.REST to 0..60,

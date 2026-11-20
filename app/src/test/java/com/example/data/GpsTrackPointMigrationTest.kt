@@ -12,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -123,7 +124,8 @@ class GpsTrackPointMigrationTest {
                     AppDatabase.MIGRATION_18_19,
                     AppDatabase.MIGRATION_19_20,
                     AppDatabase.MIGRATION_20_21,
-                    AppDatabase.MIGRATION_21_22
+                    AppDatabase.MIGRATION_21_22,
+                    AppDatabase.MIGRATION_22_23
                 )
                 .allowMainThreadQueries()
                 .build()
@@ -184,6 +186,108 @@ class GpsTrackPointMigrationTest {
             dao.deleteForSession("session_dummy_16")
             val countAfterDelete = dao.countForSession("session_dummy_16")
             assertEquals(0, countAfterDelete)
+
+            roomDb.close()
+            dbFile.delete()
+        }
+    }
+
+    @Test
+    fun testMigration22to23_addsProfileCalibrationColumnsAndBackfillsOnlyEsnaider() {
+        runBlocking {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val dbFile = context.getDatabasePath("test_migration_22_23.db")
+            if (dbFile.exists()) {
+                dbFile.delete()
+            }
+
+            val schemaFile = File("app/schemas/com.example.data.database.AppDatabase/22.json").takeIf { it.exists() }
+                ?: File("schemas/com.example.data.database.AppDatabase/22.json")
+            assertTrue("Arquivo de schema v22 deve existir", schemaFile.exists())
+
+            val helperConfig = SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbFile.name)
+                .callback(object : SupportSQLiteOpenHelper.Callback(22) {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        val json = JSONObject(schemaFile.readText())
+                        val databaseObj = json.getJSONObject("database")
+                        val entities = databaseObj.getJSONArray("entities")
+                        for (i in 0 until entities.length()) {
+                            val entity = entities.getJSONObject(i)
+                            val tableName = entity.getString("tableName")
+                            val createSql = entity.getString("createSql").replace("\${TABLE_NAME}", tableName)
+                            db.execSQL(createSql)
+                            val indices = entity.optJSONArray("indices")
+                            if (indices != null) {
+                                for (j in 0 until indices.length()) {
+                                    val idx = indices.getJSONObject(j)
+                                    val idxSql = idx.optString("createSql")
+                                    if (!idxSql.isNullOrEmpty()) {
+                                        db.execSQL(idxSql.replace("\${TABLE_NAME}", tableName))
+                                    }
+                                }
+                            }
+                        }
+                        val setupQueries = databaseObj.optJSONArray("setupQueries")
+                        if (setupQueries != null) {
+                            for (i in 0 until setupQueries.length()) {
+                                db.execSQL(setupQueries.getString(i))
+                            }
+                        }
+                    }
+
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+                })
+                .build()
+
+            val openHelper = FrameworkSQLiteOpenHelperFactory().create(helperConfig)
+            val dbV22 = openHelper.writableDatabase
+
+            dbV22.execSQL(
+                """
+                INSERT INTO `user_profile` (
+                    `id`, `nome`, `sexo`, `idade`, `altura`, `peso`, `nivelExperiencia`, `localTreino`,
+                    `foto`, `massaMagra`, `percentualGordura`, `metaSemanal`, `iconStyle`, `imc`,
+                    `taxaMuscular`, `gorduraSubcutanea`, `gorduraVisceral`, `aguaCorporal`,
+                    `massaMuscularEsqueletica`, `massaMuscular`, `massaOssea`, `proteina`, `tmb`,
+                    `idadeMetabolica`, `bioimpedanciaHistoricoJson`, `heightCm`, `weightKg`,
+                    `runningGoal`, `baselinePaceMinPerKm`
+                ) VALUES
+                    ('1', 'Esnaider', 'Masculino', 50, 187, 84.7, 'Avançado', 'Academia',
+                     '', 65.2, 23.0, 5, 'A', 24.5, 73.0, 16.5, 11.0, 52.8, 40.9, 61.8, 3.4, 20.2,
+                     1778, 49, '[]', 187, 84.7, 'CONTINUOUS_5K', 7.0),
+                    ('2', 'Alyne', 'Feminino', 42, 155, 72.0, 'Avançado', 'Academia',
+                     '', 54.0, 25.0, 4, 'A', 29.9, 46.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                     1450, 35, '[]', 155, 72.0, 'CONTINUOUS_5K', NULL)
+                """.trimIndent()
+            )
+            dbV22.close()
+            openHelper.close()
+
+            val roomDb = Room.databaseBuilder(context, AppDatabase::class.java, dbFile.name)
+                .addMigrations(AppDatabase.MIGRATION_22_23)
+                .allowMainThreadQueries()
+                .build()
+
+            val esnaider = roomDb.userDao().getUserProfileSync("1")
+            assertNotNull(esnaider)
+            assertEquals("Esnaider", esnaider!!.nome)
+            assertEquals(190, esnaider.fcMaxCalibradaBpm)
+            assertEquals(137, esnaider.limiarLt1Bpm)
+            assertEquals(162, esnaider.limiarLt2Bpm)
+            assertEquals(18.0f, esnaider.metaPercentualGordura!!, 0.01f)
+            assertEquals(74.0f, esnaider.metaPercentualMusculo!!, 0.01f)
+            assertEquals(4.2f, esnaider.metaAguaLitros!!, 0.01f)
+
+            val alyne = roomDb.userDao().getUserProfileSync("2")
+            assertNotNull(alyne)
+            assertEquals("Alyne", alyne!!.nome)
+            assertNull(alyne.fcMaxCalibradaBpm)
+            assertNull(alyne.limiarLt1Bpm)
+            assertNull(alyne.limiarLt2Bpm)
+            assertNull(alyne.metaPercentualGordura)
+            assertNull(alyne.metaPercentualMusculo)
+            assertNull(alyne.metaAguaLitros)
 
             roomDb.close()
             dbFile.delete()

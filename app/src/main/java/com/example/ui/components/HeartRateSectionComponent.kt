@@ -436,15 +436,11 @@ fun FullscreenSessionHeartRateModal(
         }
     }
     val calibratedMaxHr = remember(validAge, dossier.maxHeartRateBpm, dossier.effectiveMaxHeartRateBpm) {
-        val baseCal = maxOf(
-            dossier.effectiveMaxHeartRateBpm,
-            calculateEffectiveMaxHr(ageYears = validAge, sessionMaxHrBpm = dossier.maxHeartRateBpm)
+        val fromDossier = dossier.effectiveMaxHeartRateBpm.takeIf { it > 0 }
+        fromDossier ?: calculateEffectiveMaxHr(
+            ageYears = validAge,
+            sessionMaxHrBpm = dossier.maxHeartRateBpm.takeIf { it > 0 }
         )
-        when {
-            baseCal <= 0 -> 0
-            baseCal <= dossier.maxHeartRateBpm && dossier.maxHeartRateBpm > 0 -> dossier.maxHeartRateBpm + 4
-            else -> baseCal
-        }
     }
 
     FullscreenHeartRateAnalysisDialog(
@@ -500,16 +496,12 @@ fun FullscreenHeartRateAnalysisDialog(
     val secondaryText = if (isLightMode) Color(0xFF64748B) else Color(0xFF94A3B8)
 
     val calibratedMaxHr = remember(calibratedMaxHrOverride, validAge, maxHr) {
-        val rawCal = calibratedMaxHrOverride ?: calculateEffectiveMaxHr(
+        val overrideVal = calibratedMaxHrOverride?.takeIf { it > 0 }
+        overrideVal ?: calculateEffectiveMaxHr(
             ageYears = validAge,
             sessionMaxHrBpm = maxHr.takeIf { it > 0 },
             historicalPeakHrBpm = maxHr.takeIf { it > 0 }
         )
-        when {
-            rawCal <= 0 -> 0
-            rawCal <= maxHr && maxHr > 0 -> if (validAge != null) maxOf(maxHr + 4, 185) else maxHr + 4
-            else -> rawCal
-        }
     }
 
     val coherent5Zones = remember(effectiveSamples, avgHr, maxHr, calibratedMaxHr, durationSec) {

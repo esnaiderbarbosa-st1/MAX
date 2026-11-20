@@ -2995,7 +2995,11 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
     val carbOrange = Color(0xFFFF6B00)
     val fatBlue = Color(0xFF00B4D8)
 
-    val hasValidHrForSubstrate = dossier.avgHeartRateBpm > 0 && dossier.hrZones5.isNotEmpty()
+    val profile = remember(dossier) {
+        com.example.data.model.calculateEndurancePhysiologyProfile(dossier)
+    }
+
+    val hasValidHrForSubstrate = dossier.avgHeartRateBpm > 0 && profile.isAvailable
     if (!hasValidHrForSubstrate) {
         Card(
             modifier = modifier
@@ -3019,7 +3023,11 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
                     letterSpacing = 0.4.sp
                 )
                 Text(
-                    text = "Sem dados de FC para calcular limiares (LT1/LT2) e substrato energético.",
+                    text = if (dossier.avgHeartRateBpm <= 0) {
+                        "Sem dados de FC para calcular limiares (LT1/LT2) e substrato energético."
+                    } else {
+                        "Dados insuficientes: informe a idade ou calibração de FCmáx no perfil para calcular limiares (LT1/LT2) e zonas."
+                    },
                     color = secondaryText,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
@@ -3027,10 +3035,6 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
             }
         }
         return
-    }
-
-    val profile = remember(dossier) {
-        com.example.data.model.calculateEndurancePhysiologyProfile(dossier)
     }
 
     Card(
@@ -3121,6 +3125,16 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                val carbDisplayText = when {
+                    !profile.hasZoneDistribution -> "--"
+                    profile.hasCalorieEstimate -> "${profile.carbOxidationPct}% (~${profile.carbGramsEstimated}g)"
+                    else -> "${profile.carbOxidationPct}%"
+                }
+                val fatDisplayText = when {
+                    !profile.hasZoneDistribution -> "--"
+                    profile.hasCalorieEstimate -> "${profile.fatOxidationPct}% (~${profile.fatGramsEstimated}g)"
+                    else -> "${profile.fatOxidationPct}%"
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -3134,7 +3148,7 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
                             fontWeight = FontWeight.Black
                         )
                         Text(
-                            text = "${profile.carbOxidationPct}% (~${profile.carbGramsEstimated}g)",
+                            text = carbDisplayText,
                             color = primaryText,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Black
@@ -3148,7 +3162,7 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
                             fontWeight = FontWeight.Black
                         )
                         Text(
-                            text = "${profile.fatOxidationPct}% (~${profile.fatGramsEstimated}g)",
+                            text = fatDisplayText,
                             color = primaryText,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Black
@@ -3156,28 +3170,37 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
                     }
                 }
 
-                // Barra Horizontal Bicolor (Laranja #FF6B00 vs. Azul #00B4D8)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(12.dp)
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(Color(0xFF1E2430))
-                ) {
-                    val carbWeight = (profile.carbOxidationPct / 100f).coerceIn(0.05f, 0.95f)
-                    val fatWeight = (1f - carbWeight).coerceIn(0.05f, 0.95f)
-                    Box(
+                if (profile.hasZoneDistribution) {
+                    // Barra Horizontal Bicolor (Laranja #FF6B00 vs. Azul #00B4D8)
+                    Row(
                         modifier = Modifier
-                            .weight(carbWeight)
-                            .fillMaxHeight()
-                            .background(carbOrange)
-                    )
-                    Spacer(modifier = Modifier.width(2.dp))
-                    Box(
-                        modifier = Modifier
-                            .weight(fatWeight)
-                            .fillMaxHeight()
-                            .background(fatBlue)
+                            .fillMaxWidth()
+                            .height(12.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xFF1E2430))
+                    ) {
+                        val carbWeight = (profile.carbOxidationPct / 100f).coerceIn(0.05f, 0.95f)
+                        val fatWeight = (1f - carbWeight).coerceIn(0.05f, 0.95f)
+                        Box(
+                            modifier = Modifier
+                                .weight(carbWeight)
+                                .fillMaxHeight()
+                                .background(carbOrange)
+                        )
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Box(
+                            modifier = Modifier
+                                .weight(fatWeight)
+                                .fillMaxHeight()
+                                .background(fatBlue)
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "Dados insuficientes (< 6 amostras de FC) para distribuição de zonas e substrato.",
+                        color = secondaryText,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
@@ -3263,15 +3286,30 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Z1 (< LT1 <=${profile.lt1Bpm})", color = secondaryText, fontSize = 9.sp)
-                        Text("${profile.belowLt1Pct}%", color = fatBlue, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                        Text(
+                            text = if (profile.hasZoneDistribution) "${profile.belowLt1Pct}%" else "--",
+                            color = fatBlue,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Black
+                        )
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Z2 (LT1–LT2 ${profile.lt1Bpm + 1}–${profile.lt2Bpm - 1})", color = secondaryText, fontSize = 9.sp)
-                        Text("${profile.betweenLt1Lt2Pct}%", color = DossierGreen, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                        Text(
+                            text = if (profile.hasZoneDistribution) "${profile.betweenLt1Lt2Pct}%" else "--",
+                            color = DossierGreen,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Black
+                        )
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Z3 (> LT2 >=${profile.lt2Bpm})", color = secondaryText, fontSize = 9.sp)
-                        Text("${profile.aboveLt2Pct}%", color = carbOrange, fontSize = 12.sp, fontWeight = FontWeight.Black)
+                        Text(
+                            text = if (profile.hasZoneDistribution) "${profile.aboveLt2Pct}%" else "--",
+                            color = carbOrange,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Black
+                        )
                     }
                 }
             }

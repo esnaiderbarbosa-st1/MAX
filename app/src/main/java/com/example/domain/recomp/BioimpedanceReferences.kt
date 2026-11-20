@@ -49,12 +49,14 @@ object BioimpedanceReferences {
     }
 
     /**
-     * TEMPORÁRIO: retorna true apenas para o perfil cujo nome contém "Esnaider" (ignorando maiúsculas),
-     * até que metas fisiológicas personalizáveis por perfil existam no banco de dados.
+     * Retorna true quando o perfil possui ao menos uma meta pessoal de bioimpedância configurada
+     * (`metaPercentualGordura`, `metaPercentualMusculo` ou `metaAguaLitros`).
      */
     fun hasPersonalGoals(profile: UserProfileData?): Boolean {
-        val name = profile?.nome ?: return false
-        return name.contains("Esnaider", ignoreCase = true)
+        if (profile == null) return false
+        return profile.metaPercentualGordura != null ||
+            profile.metaPercentualMusculo != null ||
+            profile.metaAguaLitros != null
     }
 
     private fun round1(value: Float): Float = ((value * 10f).roundToInt() / 10f)

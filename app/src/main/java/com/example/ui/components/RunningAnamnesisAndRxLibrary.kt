@@ -2700,28 +2700,30 @@ object HybridReadinessEngine {
         }
 
         val effectiveMaxHr = com.example.data.model.calculateEffectiveMaxHr(
-            ageYears = athleteAge.coerceIn(18, 85),
+            ageYears = athleteAge.takeIf { it in 10..100 },
             sessionMaxHrBpm = lastRun?.maxHr,
             historicalPeakHrBpm = runningHistory.mapNotNull { it.maxHr }.maxOrNull()
         )
 
         var accumulatedZ4Z5Sec = 0
-        for (run in validRecentRuns) {
-            val samples = run.hrTimeline
-                ?.split(",")
-                ?.mapNotNull { it.trim().toIntOrNull()?.takeIf { v -> v in 45..240 } }
-                .orEmpty()
-            val dist5Zones = com.example.data.model.computeCoherent5ZoneDistribution(
-                hrSamples = samples,
-                avgBpm = run.avgHr,
-                maxBpm = run.maxHr,
-                effectiveMaxHr = effectiveMaxHr,
-                durationSeconds = run.durationSec.coerceAtLeast(1)
-            )
-            // Z4 (index 3) e Z5 (index 4)
-            val z4Sec = dist5Zones.getOrNull(3)?.durationSeconds ?: 0
-            val z5Sec = dist5Zones.getOrNull(4)?.durationSeconds ?: 0
-            accumulatedZ4Z5Sec += (z4Sec + z5Sec)
+        if (effectiveMaxHr > 0) {
+            for (run in validRecentRuns) {
+                val samples = run.hrTimeline
+                    ?.split(",")
+                    ?.mapNotNull { it.trim().toIntOrNull()?.takeIf { v -> v in 45..240 } }
+                    .orEmpty()
+                val dist5Zones = com.example.data.model.computeCoherent5ZoneDistribution(
+                    hrSamples = samples,
+                    avgBpm = run.avgHr,
+                    maxBpm = run.maxHr,
+                    effectiveMaxHr = effectiveMaxHr,
+                    durationSeconds = run.durationSec.coerceAtLeast(1)
+                )
+                // Z4 (index 3) e Z5 (index 4)
+                val z4Sec = dist5Zones.getOrNull(3)?.durationSeconds ?: 0
+                val z5Sec = dist5Zones.getOrNull(4)?.durationSeconds ?: 0
+                accumulatedZ4Z5Sec += (z4Sec + z5Sec)
+            }
         }
         val z4z5Minutes = accumulatedZ4Z5Sec / 60f
         val maxRecentRunRpe = validRecentRuns.maxOfOrNull { it.rpe } ?: 0
@@ -3246,7 +3248,7 @@ fun evaluateRunnaPaceEvolution(
     )
 
     val effectiveMaxHr = com.example.data.model.calculateEffectiveMaxHr(
-        ageYears = athleteAge.coerceIn(18, 85),
+        ageYears = athleteAge.takeIf { it in 10..100 },
         sessionMaxHrBpm = session.maxHr,
         historicalPeakHrBpm = allRunningSessions.mapNotNull { it.maxHr }.maxOrNull()
     )
@@ -3267,7 +3269,7 @@ fun evaluateRunnaPaceEvolution(
     } else {
         session.avgHr?.takeIf { it > 0 }
     }
-    val hrPctOfMax: Int? = if (sprintAvgHr != null) {
+    val hrPctOfMax: Int? = if (sprintAvgHr != null && effectiveMaxHr > 0) {
         ((sprintAvgHr.toFloat() / effectiveMaxHr.toFloat()) * 100f).roundToInt()
     } else null
 

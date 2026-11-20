@@ -356,7 +356,7 @@ interface BetaLabDao {
         RunningSession::class,
         GpsTrackPoint::class
     ],
-    version = 22,
+    version = 23,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -699,6 +699,48 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                android.util.Log.i("MAX_PERFORMANCE_DEBUG", "Applying MIGRATION_22_23: adding calibration and bioimpedance goal columns to user_profile")
+                val cursor = db.query("PRAGMA table_info(user_profile)")
+                val existingCols = mutableSetOf<String>()
+                val nameIndex = cursor.getColumnIndex("name")
+                if (nameIndex != -1) {
+                    while (cursor.moveToNext()) {
+                        existingCols.add(cursor.getString(nameIndex).lowercase())
+                    }
+                }
+                cursor.close()
+
+                if (!existingCols.contains("fcmaxcalibradabpm")) {
+                    db.execSQL("ALTER TABLE `user_profile` ADD COLUMN `fcMaxCalibradaBpm` INTEGER")
+                }
+                if (!existingCols.contains("limiarlt1bpm")) {
+                    db.execSQL("ALTER TABLE `user_profile` ADD COLUMN `limiarLt1Bpm` INTEGER")
+                }
+                if (!existingCols.contains("limiarlt2bpm")) {
+                    db.execSQL("ALTER TABLE `user_profile` ADD COLUMN `limiarLt2Bpm` INTEGER")
+                }
+                if (!existingCols.contains("metapercentualgordura")) {
+                    db.execSQL("ALTER TABLE `user_profile` ADD COLUMN `metaPercentualGordura` REAL")
+                }
+                if (!existingCols.contains("metapercentualmusculo")) {
+                    db.execSQL("ALTER TABLE `user_profile` ADD COLUMN `metaPercentualMusculo` REAL")
+                }
+                if (!existingCols.contains("metaagualitros")) {
+                    db.execSQL("ALTER TABLE `user_profile` ADD COLUMN `metaAguaLitros` REAL")
+                }
+
+                // Migração única de dados: preserva calibração fisiológica e metas do perfil Esnaider existente
+                db.execSQL("UPDATE `user_profile` SET `fcMaxCalibradaBpm` = 190 WHERE `nome` LIKE '%Esnaider%' AND `fcMaxCalibradaBpm` IS NULL")
+                db.execSQL("UPDATE `user_profile` SET `limiarLt1Bpm` = 137 WHERE `nome` LIKE '%Esnaider%' AND `limiarLt1Bpm` IS NULL")
+                db.execSQL("UPDATE `user_profile` SET `limiarLt2Bpm` = 162 WHERE `nome` LIKE '%Esnaider%' AND `limiarLt2Bpm` IS NULL")
+                db.execSQL("UPDATE `user_profile` SET `metaPercentualGordura` = 18.0 WHERE `nome` LIKE '%Esnaider%' AND `metaPercentualGordura` IS NULL")
+                db.execSQL("UPDATE `user_profile` SET `metaPercentualMusculo` = 74.0 WHERE `nome` LIKE '%Esnaider%' AND `metaPercentualMusculo` IS NULL")
+                db.execSQL("UPDATE `user_profile` SET `metaAguaLitros` = 4.2 WHERE `nome` LIKE '%Esnaider%' AND `metaAguaLitros` IS NULL")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 android.util.Log.i("MAX_PERFORMANCE_DEBUG", "Database initialized with migrations.")
@@ -728,7 +770,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_18_19,
                     MIGRATION_19_20,
                     MIGRATION_20_21,
-                    MIGRATION_21_22
+                    MIGRATION_21_22,
+                    MIGRATION_22_23
                 )
                 .fallbackToDestructiveMigrationOnDowngrade()
                 .build()

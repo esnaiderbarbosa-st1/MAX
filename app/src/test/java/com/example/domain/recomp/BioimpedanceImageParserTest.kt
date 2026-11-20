@@ -133,24 +133,44 @@ class BioimpedanceImageParserTest {
 
     @Test
     fun savedTemplates_onlyAvailableForProfilesWithPersonalGoals() {
+        val profileWithoutGoals = UserProfileData(
+            nome = "Esnaider",
+            idade = 50,
+            altura = 187,
+            heightCm = 187,
+            peso = 84.7f,
+            weightKg = 84.7f,
+            metaPercentualGordura = null,
+            metaPercentualMusculo = null,
+            metaAguaLitros = null
+        )
+        val profileWithCustomGoals = UserProfileData(
+            nome = "Atleta Com Metas",
+            idade = 34,
+            altura = 175,
+            heightCm = 175,
+            peso = 75.0f,
+            weightKg = 75.0f,
+            metaPercentualGordura = 16.0f
+        )
         val alyne = UserProfileData.PRESET_ALYNE
-        val esnaider = UserProfileData.PRESET_ESNAIDER
 
         assertTrue(BioimpedanceImageParser.availableTemplatesForProfile(alyne).isEmpty())
+        assertTrue(BioimpedanceImageParser.availableTemplatesForProfile(profileWithoutGoals).isEmpty())
         assertTrue(BioimpedanceImageParser.availableTemplatesForProfile(null).isEmpty())
 
-        val esnaiderTemplates = BioimpedanceImageParser.availableTemplatesForProfile(esnaider)
-        assertTrue(esnaiderTemplates.contains(BioimpedanceDetectedTemplate.FITDAYS_29_10))
-        assertTrue(esnaiderTemplates.contains(BioimpedanceDetectedTemplate.RELAXMEDIC_13_10))
-        assertFalse(esnaiderTemplates.contains(BioimpedanceDetectedTemplate.NAO_DETECTADO))
+        val customTemplates = BioimpedanceImageParser.availableTemplatesForProfile(profileWithCustomGoals)
+        assertTrue(customTemplates.contains(BioimpedanceDetectedTemplate.FITDAYS_29_10))
+        assertTrue(customTemplates.contains(BioimpedanceDetectedTemplate.RELAXMEDIC_13_10))
+        assertFalse(customTemplates.contains(BioimpedanceDetectedTemplate.NAO_DETECTADO))
 
-        // Mesmo se buildResultForTemplate for chamado diretamente para Alyne, nunca retorna 84,7 ou 85,7
-        val alyneBlank = BodyRecompEngine.createBlankProfileRecord(alyne, includeProfileWeight = false)
+        // Mesmo se buildResultForTemplate for chamado diretamente para perfil sem meta*, nunca retorna 84,7 ou 85,7
+        val blankNoGoals = BodyRecompEngine.createBlankProfileRecord(profileWithoutGoals, includeProfileWeight = false)
         val blockedFitdays = BioimpedanceImageParser.buildResultForTemplate(
             template = BioimpedanceDetectedTemplate.FITDAYS_29_10,
             photoUri = null,
-            fallbackBase = alyneBlank,
-            profile = alyne
+            fallbackBase = blankNoGoals,
+            profile = profileWithoutGoals
         )
         assertEquals(BioimpedanceDetectedTemplate.NAO_DETECTADO, blockedFitdays.detectedTemplate)
         assertEquals(0, blockedFitdays.filledIndicatorsCount)
@@ -159,21 +179,21 @@ class BioimpedanceImageParserTest {
         val blockedRelax = BioimpedanceImageParser.buildResultForTemplate(
             template = BioimpedanceDetectedTemplate.RELAXMEDIC_13_10,
             photoUri = null,
-            fallbackBase = alyneBlank,
+            fallbackBase = blankNoGoals,
             profile = alyne
         )
         assertEquals(BioimpedanceDetectedTemplate.NAO_DETECTADO, blockedRelax.detectedTemplate)
         assertEquals(0, blockedRelax.filledIndicatorsCount)
         assertEquals(0f, blockedRelax.record.weightKg, 0.001f)
 
-        // Para Esnaider, seleção explícita de template importa leitura salva com rótulo claro
-        val esnaiderImported = BioimpedanceImageParser.buildResultForTemplate(
+        // Para perfil com meta* configurada, seleção explícita de template importa leitura salva com rótulo claro
+        val importedWithGoals = BioimpedanceImageParser.buildResultForTemplate(
             template = BioimpedanceDetectedTemplate.FITDAYS_29_10,
             photoUri = null,
-            fallbackBase = alyneBlank,
-            profile = esnaider
+            fallbackBase = blankNoGoals,
+            profile = profileWithCustomGoals
         )
-        assertEquals(84.7f, esnaiderImported.record.weightKg, 0.01f)
-        assertTrue(esnaiderImported.statusHeadline.contains("Leitura salva", ignoreCase = true))
+        assertEquals(84.7f, importedWithGoals.record.weightKg, 0.01f)
+        assertTrue(importedWithGoals.statusHeadline.contains("Leitura salva", ignoreCase = true))
     }
 }

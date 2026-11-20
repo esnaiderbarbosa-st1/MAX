@@ -564,6 +564,8 @@ object BodyRecompEngine {
     ): List<BioimpedanceIndicatorAssessment> {
         val ptBr = Locale.forLanguageTag("pt-BR")
         val hasPersonalGoals = BioimpedanceReferences.hasPersonalGoals(profile)
+        val targetBodyFat = profile?.metaPercentualGordura?.takeIf { it > 0f }
+        val targetMuscleRate = profile?.metaPercentualMusculo?.takeIf { it > 0f }
         val profileHeightCm = resolveValidHeightCmOrNull(profile)
         val healthyWeightRange = BioimpedanceReferences.healthyWeightRangeKg(profileHeightCm)
 
@@ -601,14 +603,14 @@ object BodyRecompEngine {
                 secondaryValue = if (record.bodyFatPercent > 0f && record.weightKg > 0f) {
                     String.format(ptBr, "%.1f kg lipídios", record.fatMassKg)
                 } else null,
-                referenceTargetText = if (hasPersonalGoals) "Meta < 18,0%" else "Sem referência",
-                status = if (!hasPersonalGoals || record.bodyFatPercent <= 0f) {
+                referenceTargetText = targetBodyFat?.let { String.format(ptBr, "Meta < %.1f%%", it) } ?: "Sem referência",
+                status = if (targetBodyFat == null || record.bodyFatPercent <= 0f) {
                     IndicatorStatus.NEUTRO
                 } else {
                     when {
                         record.bodyFatPercent < 10f -> IndicatorStatus.BAIXO
-                        record.bodyFatPercent <= 18f -> IndicatorStatus.EXCELENTE
-                        record.bodyFatPercent <= 21f -> IndicatorStatus.MEDIO
+                        record.bodyFatPercent <= targetBodyFat -> IndicatorStatus.EXCELENTE
+                        record.bodyFatPercent <= targetBodyFat + 3f -> IndicatorStatus.MEDIO
                         else -> IndicatorStatus.ALTO
                     }
                 }
@@ -617,13 +619,13 @@ object BodyRecompEngine {
                 indexNumber = 4,
                 titlePt = "Taxa Muscular",
                 formattedValue = if (record.muscleRatePercent > 0f) String.format(ptBr, "%.1f%%", record.muscleRatePercent) else "--",
-                referenceTargetText = if (hasPersonalGoals) "Ideal > 74,0%" else "Sem referência",
-                status = if (!hasPersonalGoals || record.muscleRatePercent <= 0f) {
+                referenceTargetText = targetMuscleRate?.let { String.format(ptBr, "Ideal > %.1f%%", it) } ?: "Sem referência",
+                status = if (targetMuscleRate == null || record.muscleRatePercent <= 0f) {
                     IndicatorStatus.NEUTRO
                 } else {
                     when {
-                        record.muscleRatePercent < 65f -> IndicatorStatus.BAIXO
-                        record.muscleRatePercent < 74f -> IndicatorStatus.MEDIO
+                        record.muscleRatePercent < (targetMuscleRate - 9f) -> IndicatorStatus.BAIXO
+                        record.muscleRatePercent < targetMuscleRate -> IndicatorStatus.MEDIO
                         else -> IndicatorStatus.EXCELENTE
                     }
                 }
@@ -818,8 +820,9 @@ object BodyRecompEngine {
             return (value / target).coerceIn(0.08f, 1f)
         }
 
-        val bfProgress = progressLowerBetter(current.bodyFatPercent, TARGET_BODY_FAT_PERCENT, baseline?.bodyFatPercent)
-        val bfDiff = (current.bodyFatPercent - TARGET_BODY_FAT_PERCENT).coerceAtLeast(0f)
+        val targetBodyFat = profile?.metaPercentualGordura?.takeIf { it > 0f } ?: TARGET_BODY_FAT_PERCENT
+        val bfProgress = progressLowerBetter(current.bodyFatPercent, targetBodyFat, baseline?.bodyFatPercent)
+        val bfDiff = (current.bodyFatPercent - targetBodyFat).coerceAtLeast(0f)
         val bfKgToLose = round1((bfDiff / 100f) * current.weightKg)
 
         val viscProgress = progressLowerBetter(current.visceralFatIndex, TARGET_VISCERAL_FAT_INDEX, baseline?.visceralFatIndex)
@@ -836,18 +839,18 @@ object BodyRecompEngine {
                 id = "goal_body_fat",
                 title = "Gordura Corporal",
                 currentValue = current.bodyFatPercent,
-                targetValue = TARGET_BODY_FAT_PERCENT,
+                targetValue = targetBodyFat,
                 unit = "%",
                 isLowerBetter = true,
                 progressFraction = bfProgress,
                 currentFormatted = String.format(ptBr, "%.1f%% (%.1f kg)", current.bodyFatPercent, current.fatMassKg),
-                targetFormatted = "< 18,0%",
+                targetFormatted = String.format(ptBr, "< %.1f%%", targetBodyFat),
                 deltaRemainingText = if (bfDiff <= 0f) {
                     "Meta atingida!"
                 } else {
                     String.format(ptBr, "Faltam -%.1f%% (~%.1f kg)", bfDiff, bfKgToLose)
                 },
-                status = if (current.bodyFatPercent <= TARGET_BODY_FAT_PERCENT) IndicatorStatus.EXCELENTE else IndicatorStatus.ALTO
+                status = if (current.bodyFatPercent <= targetBodyFat) IndicatorStatus.EXCELENTE else IndicatorStatus.ALTO
             ),
             PhysiologicalGoalProgress(
                 id = "goal_visceral_fat",
@@ -1294,10 +1297,10 @@ object BodyRecompEngine {
         profile: UserProfileData? = WeightCalculator.activeUserProfile
     ): String? {
         if (!BioimpedanceReferences.hasPersonalGoals(profile) || record.bodyWaterPercent <= 0f) return null
+        val targetWaterLiters = profile?.metaAguaLitros?.takeIf { it > 0f } ?: return null
         if (record.bodyWaterPercent >= TARGET_BODY_WATER_PERCENT) return null
         val ptBr = Locale.forLanguageTag("pt-BR")
         val deficit = TARGET_BODY_WATER_PERCENT - record.bodyWaterPercent
-        val targetWaterLiters = TARGET_WATER_LITERS_PER_DAY
         return String.format(
             ptBr,
             "Água corporal em %.1f%% (-%.1f%% abaixo do piso ideal de 55,0%%). Em balanças Fitdays/Relaxmedic, a corrente elétrica percorre a água intracelular do músculo: elevar a hidratação para %.1f L/dia melhora a leitura do Músculo Esquelético (%.1f%%) e reduz a impedância aparente.",

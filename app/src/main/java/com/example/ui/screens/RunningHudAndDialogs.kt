@@ -2728,6 +2728,9 @@ fun FullscreenHeartRateModal(
     avgBpm: Int?,
     maxBpm: Int?,
     athleteAge: Int?,
+    calibratedMaxHrBpm: Int? = null,
+    calibratedLt1Bpm: Int? = null,
+    calibratedLt2Bpm: Int? = null,
     hrSamples: List<Int> = emptyList(),
     durationSeconds: Int = 0,
     onRequestBleScan: (() -> Unit)? = null,
@@ -2812,24 +2815,22 @@ fun FullscreenHeartRateModal(
 
     val validAge = athleteAge?.takeIf { it in 10..100 }
     val theoreticalMaxHr = validAge?.let { (220 - it.coerceIn(15, 95)).coerceAtLeast(150) }
-    val calibratedMaxHr = remember(validAge, sessionPeak) {
-        val baseCalibrated = com.example.data.model.calculateEffectiveMaxHr(
+    val calibratedMaxHr = remember(validAge, sessionPeak, calibratedMaxHrBpm) {
+        com.example.data.model.calculateEffectiveMaxHr(
             ageYears = validAge,
-            sessionMaxHrBpm = if (sessionPeak > 0) sessionPeak else null
+            sessionMaxHrBpm = if (sessionPeak > 0) sessionPeak else null,
+            calibratedMaxHrBpm = calibratedMaxHrBpm
         )
-        if (sessionPeak > 0 && baseCalibrated == sessionPeak) {
-            (sessionPeak + 4).coerceAtMost(220)
-        } else {
-            baseCalibrated
-        }
     }
     val isAutoCalibrated = theoreticalMaxHr != null && calibratedMaxHr > theoreticalMaxHr
 
-    val enduranceSnap = remember(displayBpm, sessionAvg, calibratedMaxHr) {
-        val refBpm = if (displayBpm > 0) displayBpm else if (sessionAvg > 0) sessionAvg else 135
+    val enduranceSnap = remember(displayBpm, sessionAvg, calibratedMaxHr, calibratedLt1Bpm, calibratedLt2Bpm) {
+        val refBpm = if (displayBpm > 0) displayBpm else sessionAvg
         com.example.data.model.calculateLiveBpmEnduranceSnapshot(
             currentBpm = refBpm,
-            calibratedMaxHr = calibratedMaxHr
+            calibratedMaxHr = calibratedMaxHr,
+            calibratedLt1Bpm = calibratedLt1Bpm,
+            calibratedLt2Bpm = calibratedLt2Bpm
         )
     }
 
@@ -2838,7 +2839,7 @@ fun FullscreenHeartRateModal(
     } else 0
 
     val activeZoneIndex = when {
-        displayBpm <= 0 -> -1
+        displayBpm <= 0 || calibratedMaxHr <= 0 -> -1
         pctMaxHr < 60 -> 0 // Z1
         pctMaxHr < 70 -> 1 // Z2
         pctMaxHr < 80 -> 2 // Z3
@@ -2851,13 +2852,17 @@ fun FullscreenHeartRateModal(
     }
 
     val zoneDistributions = remember(effectiveSamples, sessionAvg, sessionPeak, calibratedMaxHr, estimatedDurationSec) {
-        com.example.data.model.computeCoherent5ZoneDistribution(
-            hrSamples = effectiveSamples,
-            avgBpm = if (sessionAvg > 0) sessionAvg else null,
-            maxBpm = if (sessionPeak > 0) sessionPeak else null,
-            effectiveMaxHr = calibratedMaxHr,
-            durationSeconds = estimatedDurationSec
-        )
+        if (calibratedMaxHr > 0) {
+            com.example.data.model.computeCoherent5ZoneDistribution(
+                hrSamples = effectiveSamples,
+                avgBpm = if (sessionAvg > 0) sessionAvg else null,
+                maxBpm = if (sessionPeak > 0) sessionPeak else null,
+                effectiveMaxHr = calibratedMaxHr,
+                durationSeconds = estimatedDurationSec
+            )
+        } else {
+            emptyList()
+        }
     }
 
     data class HrZoneMeta(
@@ -2869,12 +2874,14 @@ fun FullscreenHeartRateModal(
         val color: Color
     )
 
+    val lt1Label = if (enduranceSnap.lt1Bpm > 0) "${enduranceSnap.lt1Bpm} bpm" else "--"
+    val lt2Label = if (enduranceSnap.lt2Bpm > 0) "${enduranceSnap.lt2Bpm} bpm" else "--"
     val zonesMeta = listOf(
         HrZoneMeta("Z1", "Recuperação Ativa (< LT1)", "Substrato: 80% Gordura • Todo o dia", 50, 60, Color(0xFF00B0FF)),
-        HrZoneMeta("Z2", "Queima de Gordura (<= LT1 137 bpm)", "Substrato: 70% Gordura / 30% CHO • +150 min", 60, 72, Color(0xFF00E5FF)),
+        HrZoneMeta("Z2", "Queima de Gordura (<= LT1 $lt1Label)", "Substrato: 70% Gordura / 30% CHO • +150 min", 60, 72, Color(0xFF00E5FF)),
         HrZoneMeta("Z3", "Aeróbico / Tempo (LT1–LT2)", "Substrato: 75% Glicogênio • 60 a 150 min", 72, 80, Color(0xFF00E676)),
-        HrZoneMeta("Z4", "Limiar Anaeróbico (Próximo LT2 162 bpm)", "Substrato: 85% Glicogênio • 45 a 75 min", 80, 86, Color(0xFFFFB300)),
-        HrZoneMeta("Z5", "VO2máx / Acima de LT2 (> 162 bpm)", "Substrato: 96% Glicogênio • Fadiga 2 a 7 min", 86, 100, Color(0xFFFF5252))
+        HrZoneMeta("Z4", "Limiar Anaeróbico (Próximo LT2 $lt2Label)", "Substrato: 85% Glicogênio • 45 a 75 min", 80, 86, Color(0xFFFFB300)),
+        HrZoneMeta("Z5", "VO2máx / Acima de LT2 (> $lt2Label)", "Substrato: 96% Glicogênio • Fadiga 2 a 7 min", 86, 100, Color(0xFFFF5252))
     )
 
     val currentZone = zonesMeta.getOrNull(activeZoneIndex)
@@ -2920,9 +2927,14 @@ fun FullscreenHeartRateModal(
                                 fontWeight = FontWeight.Black,
                                 letterSpacing = 1.sp
                             )
-                            val headerMaxHrLabel = if (calibratedMaxHr > 0) "$calibratedMaxHr bpm" else "idade não informada"
+                            val headerMaxHrLabel = if (calibratedMaxHr > 0) "$calibratedMaxHr bpm" else "dados insuficientes"
+                            val headerLtLabel = if (enduranceSnap.isAvailable && enduranceSnap.lt1Bpm > 0 && enduranceSnap.lt2Bpm > 0) {
+                                "LT1: ${enduranceSnap.lt1Bpm} bpm • LT2: ${enduranceSnap.lt2Bpm} bpm"
+                            } else {
+                                "LT1: -- • LT2: --"
+                            }
                             Text(
-                                text = "FCmáx Calibrada: $headerMaxHrLabel • LT1: ${enduranceSnap.lt1Bpm} bpm • LT2: ${enduranceSnap.lt2Bpm} bpm",
+                                text = "FCmáx Calibrada: $headerMaxHrLabel • $headerLtLabel",
                                 color = Color(0xFF94A3B8),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium
@@ -3157,6 +3169,7 @@ fun FullscreenHeartRateModal(
                             }
 
                             // Barra Dual-Fuel ao vivo: Carboidrato (#FF6B00) vs Gordura (#00B4D8)
+                            val hasFuelData = enduranceSnap.isAvailable && (enduranceSnap.carbPct > 0 || enduranceSnap.fatPct > 0)
                             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -3164,7 +3177,7 @@ fun FullscreenHeartRateModal(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "CHO (Glicogênio): ${enduranceSnap.carbPct}%",
+                                        text = if (hasFuelData) "CHO (Glicogênio): ${enduranceSnap.carbPct}%" else "CHO (Glicogênio): --",
                                         color = Color(0xFFFF6B00),
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.Black,
@@ -3172,7 +3185,7 @@ fun FullscreenHeartRateModal(
                                         softWrap = false
                                     )
                                     Text(
-                                        text = "Gordura (Lipídios): ${enduranceSnap.fatPct}%",
+                                        text = if (hasFuelData) "Gordura (Lipídios): ${enduranceSnap.fatPct}%" else "Gordura (Lipídios): --",
                                         color = Color(0xFF00B4D8),
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.Black,
@@ -3180,27 +3193,29 @@ fun FullscreenHeartRateModal(
                                         softWrap = false
                                     )
                                 }
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(10.dp)
-                                        .clip(RoundedCornerShape(5.dp))
-                                        .background(Color(0xFF0D0F14))
-                                ) {
-                                    val cWeight = enduranceSnap.carbPct.coerceIn(5, 98) / 100f
-                                    val fWeight = (1f - cWeight).coerceAtLeast(0.02f)
-                                    Box(
+                                if (hasFuelData) {
+                                    Row(
                                         modifier = Modifier
-                                            .weight(cWeight)
-                                            .fillMaxHeight()
-                                            .background(Color(0xFFFF6B00))
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(fWeight)
-                                            .fillMaxHeight()
-                                            .background(Color(0xFF00B4D8))
-                                    )
+                                            .fillMaxWidth()
+                                            .height(10.dp)
+                                            .clip(RoundedCornerShape(5.dp))
+                                            .background(Color(0xFF0D0F14))
+                                    ) {
+                                        val cWeight = enduranceSnap.carbPct.coerceIn(5, 98) / 100f
+                                        val fWeight = (1f - cWeight).coerceAtLeast(0.02f)
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(cWeight)
+                                                .fillMaxHeight()
+                                                .background(Color(0xFFFF6B00))
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(fWeight)
+                                                .fillMaxHeight()
+                                                .background(Color(0xFF00B4D8))
+                                        )
+                                    }
                                 }
                             }
 
@@ -3225,7 +3240,11 @@ fun FullscreenHeartRateModal(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = "${enduranceSnap.lt1Bpm} / ${enduranceSnap.lt2Bpm} bpm",
+                                        text = if (enduranceSnap.isAvailable && enduranceSnap.lt1Bpm > 0 && enduranceSnap.lt2Bpm > 0) {
+                                            "${enduranceSnap.lt1Bpm} / ${enduranceSnap.lt2Bpm} bpm"
+                                        } else {
+                                            "--"
+                                        },
                                         color = Color.White,
                                         fontSize = 10.5.sp,
                                         fontWeight = FontWeight.Black,

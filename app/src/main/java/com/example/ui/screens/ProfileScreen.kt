@@ -203,8 +203,12 @@ fun ProfileScreen(
             // 1. DADOS BIOMÉTRICOS UNIFICADOS (Card Único — Sem Duplicação)
             // =========================================================================
             item {
-                val heightMeters = (profile.altura / 100f).coerceAtLeast(0.5f)
-                val calculatedImc = profile.peso / (heightMeters * heightMeters)
+                val calculatedImc: Float? = if (profile.peso > 0f && profile.altura > 0) {
+                    val heightMeters = profile.altura / 100f
+                    profile.peso / (heightMeters * heightMeters)
+                } else {
+                    null
+                }
 
                 Card(
                     modifier = Modifier
@@ -283,7 +287,7 @@ fun ProfileScreen(
                             ) {
                                 BiometricStatItem(
                                     label = "PESO",
-                                    value = String.format(Locale.US, "%.1f kg", profile.peso),
+                                    value = if (profile.peso > 0f) String.format(Locale.US, "%.1f kg", profile.peso) else "--",
                                     primaryText = primaryText,
                                     secondaryText = secondaryText
                                 )
@@ -295,7 +299,7 @@ fun ProfileScreen(
                                 )
                                 BiometricStatItem(
                                     label = "ALTURA",
-                                    value = "${profile.altura} cm",
+                                    value = if (profile.altura > 0) "${profile.altura} cm" else "--",
                                     primaryText = primaryText,
                                     secondaryText = secondaryText
                                 )
@@ -307,7 +311,7 @@ fun ProfileScreen(
                                 )
                                 BiometricStatItem(
                                     label = "IDADE",
-                                    value = "${profile.idade} anos",
+                                    value = if (profile.idade > 0) "${profile.idade} anos" else "--",
                                     primaryText = primaryText,
                                     secondaryText = secondaryText
                                 )
@@ -319,7 +323,7 @@ fun ProfileScreen(
                                 )
                                 BiometricStatItem(
                                     label = "IMC",
-                                    value = String.format(Locale.US, "%.1f", calculatedImc),
+                                    value = calculatedImc?.let { String.format(Locale.US, "%.1f", it) } ?: "--",
                                     primaryText = brandAccent,
                                     secondaryText = secondaryText
                                 )

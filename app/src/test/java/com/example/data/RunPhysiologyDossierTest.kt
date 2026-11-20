@@ -84,10 +84,9 @@ class RunPhysiologyDossierTest {
         assertTrue("Sem GPS, pace por amostra deve permanecer 0", dossier.telemetrySamples.all { it.paceSecPerKm == 0f })
         assertEquals(0, dossier.avgCadenceSpm)
         assertEquals("Maria Silva", dossier.athleteName)
-        // Sem idade no perfil, não assume 30 anos: calibra com FC máxima medida da sessão (161 bpm)
-        assertEquals(161, dossier.effectiveMaxHeartRateBpm)
-        assertEquals(5, dossier.hrZones5.size)
-        assertTrue(dossier.hrZones5.any { it.percentage > 0f })
+        // Lote B1 Item 3a: sem idade válida e sem fcMaxCalibradaBpm, não usa o pico observado (161) como FC máxima
+        assertEquals(0, dossier.effectiveMaxHeartRateBpm)
+        assertTrue("Sem FC máxima calibrada ou idade válida, hrZones5 deve permanecer vazia", dossier.hrZones5.isEmpty())
     }
 
     @Test

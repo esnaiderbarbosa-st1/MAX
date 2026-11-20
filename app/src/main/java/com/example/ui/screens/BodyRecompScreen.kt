@@ -495,12 +495,18 @@ fun BodyRecompScreen(
                         },
                         onExportClinicalPdf = {
                             AudioSynth.playTickSound()
+                            val ptBr = Locale.forLanguageTag("pt-BR")
+                            val waterLabel = activeProfile?.metaAguaLitros?.takeIf { it > 0f }
+                                ?.let { String.format(ptBr, "%.1f L/dia", it) }
+                                ?: "Não definida"
                             BioimpedancePdfExporter.exportAndShareClinicalPdf(
                                 context = context,
                                 activeRecord = activeRecord,
                                 allRecords = records,
+                                athleteName = activeProfile?.nome?.ifBlank { "Atleta" } ?: "Atleta",
                                 athleteAge = activeProfile?.idade?.takeIf { it in 10..100 },
-                                heightCm = activeProfileHeightCm
+                                heightCm = activeProfileHeightCm,
+                                waterGoalLabel = waterLabel
                             )
                         }
                     )
