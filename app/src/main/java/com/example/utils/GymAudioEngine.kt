@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.media.ToneGenerator
 import android.os.Build
 import android.os.Handler
@@ -39,6 +40,9 @@ object GymAudioEngine {
     private const val REST_FINISHED_DEBOUNCE_MS = 1200L
     private const val ALERT_FOCUS_SAFETY_TIMEOUT_MS = 1200L
     private const val VOICE_FOCUS_SAFETY_TIMEOUT_MS = 2000L
+    private const val BELL_SEEK_MS = 450
+    private const val BELL_PLAY_DURATION_MS = 4000L
+    private const val BELL_FADEOUT_MS = 500L
 
     @Volatile
     private var lastRestFinishedRealtimeMs: Long = 0L
@@ -51,6 +55,14 @@ object GymAudioEngine {
 
     @Volatile
     private var activeGymAudioTrack: AudioTrack? = null
+
+    private val bellLock = Any()
+
+    @Volatile
+    private var activeBellMediaPlayer: MediaPlayer? = null
+
+    @Volatile
+    private var bellFadeJob: Job? = null
 
     @Volatile
     private var gymToneGenerator: ToneGenerator? = null
@@ -197,11 +209,7 @@ object GymAudioEngine {
 
         when (option) {
             "bipe" -> playMediaStreamTripleBeep880To1760(appCtx)
-            else -> MaxSoundManager.playBoxingBell(
-                context = appCtx,
-                bypassDebounce = bypassDebounce,
-                ignoreMutePrefs = soundEnabledOverride == true
-            )
+            else -> playRestBell(appCtx)
         }
     }
 
@@ -230,10 +238,137 @@ object GymAudioEngine {
     }
 
     /**
+     * Reproduz o gongo real (`R.raw.sino_boxe`) via `MediaPlayer` em `USAGE_MEDIA` + `CONTENT_TYPE_SONIFICATION`
+     * (mesmos atributos do tic-tac), sem `requestAudioFocus`, volume 1.0, pulando ~450 ms de silêncio inicial
+     * e encerrando após ~4 s com fade-out nos últimos ~500 ms. Em falha, faz fallback para o triplo bipe.
+     */
+    private fun playRestBell(context: Context) {
+        val appCtx = context.applicationContext ?: context
+        stopActiveTrackOnly(appCtx)
+        stopAndReleaseBellPlayer()
+
+        val afd = runCatching {
+            appCtx.resources.openRawResourceFd(com.example.R.raw.sino_boxe)
+        }.onFailure { err ->
+            Log.w(TAG, "Failed to open R.raw.sino_boxe, falling back to triple beep", err)
+        }.getOrNull()
+
+        if (afd == null) {
+            Log.w(TAG, "R.raw.sino_boxe descriptor is null, falling back to triple beep")
+            playMediaStreamTripleBeep880To1760(appCtx)
+            return
+        }
+
+        val mp = MediaPlayer()
+        synchronized(bellLock) {
+            activeBellMediaPlayer = mp
+        }
+
+        try {
+            mp.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            mp.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+            runCatching { afd.close() }
+            mp.setVolume(1f, 1f)
+
+            mp.setOnCompletionListener { player ->
+                releaseBellPlayerIfCurrent(player)
+            }
+            mp.setOnErrorListener { player, what, extra ->
+                Log.w(TAG, "MediaPlayer sino_boxe error: what=$what extra=$extra, falling back to triple beep")
+                releaseBellPlayerIfCurrent(player)
+                playMediaStreamTripleBeep880To1760(appCtx)
+                true
+            }
+            mp.setOnPreparedListener { player ->
+                val isCurrent = synchronized(bellLock) { activeBellMediaPlayer === player }
+                if (!isCurrent) {
+                    runCatching { player.release() }
+                    return@setOnPreparedListener
+                }
+                runCatching {
+                    player.seekTo(BELL_SEEK_MS)
+                    player.setVolume(1f, 1f)
+                    player.start()
+                    val fadeJob = engineScope.launch {
+                        delay(BELL_PLAY_DURATION_MS - BELL_FADEOUT_MS)
+                        val steps = 10
+                        val stepDelayMs = BELL_FADEOUT_MS / steps
+                        for (step in 1..steps) {
+                            val stillCurrent = synchronized(bellLock) { activeBellMediaPlayer === player }
+                            if (!stillCurrent) return@launch
+                            val vol = ((steps - step).toFloat() / steps.toFloat()).coerceIn(0f, 1f)
+                            runCatching { player.setVolume(vol, vol) }
+                            delay(stepDelayMs)
+                        }
+                        releaseBellPlayerIfCurrent(player)
+                    }
+                    synchronized(bellLock) {
+                        if (activeBellMediaPlayer === player) {
+                            bellFadeJob = fadeJob
+                        } else {
+                            fadeJob.cancel()
+                        }
+                    }
+                }.onFailure { err ->
+                    Log.w(TAG, "Failed to start MediaPlayer sino_boxe, falling back to triple beep", err)
+                    releaseBellPlayerIfCurrent(player)
+                    playMediaStreamTripleBeep880To1760(appCtx)
+                }
+            }
+            mp.prepareAsync()
+        } catch (t: Throwable) {
+            runCatching { afd.close() }
+            Log.w(TAG, "MediaPlayer sino_boxe setup failed, falling back to triple beep", t)
+            releaseBellPlayerIfCurrent(mp)
+            playMediaStreamTripleBeep880To1760(appCtx)
+        }
+    }
+
+    private fun releaseBellPlayerIfCurrent(player: MediaPlayer) {
+        synchronized(bellLock) {
+            if (activeBellMediaPlayer === player) {
+                bellFadeJob?.cancel()
+                bellFadeJob = null
+                activeBellMediaPlayer = null
+            }
+        }
+        runCatching {
+            if (player.isPlaying) {
+                player.stop()
+            }
+        }
+        runCatching { player.release() }
+    }
+
+    private fun stopAndReleaseBellPlayer() {
+        val player = synchronized(bellLock) {
+            bellFadeJob?.cancel()
+            bellFadeJob = null
+            val current = activeBellMediaPlayer
+            activeBellMediaPlayer = null
+            current
+        }
+        if (player != null) {
+            runCatching {
+                if (player.isPlaying) {
+                    player.stop()
+                }
+            }
+            runCatching { player.release() }
+        }
+    }
+
+    /**
      * Bipe Triplo Forte Ascendente (880Hz -> 1320Hz -> 1760Hz) em `AudioAttributes.USAGE_MEDIA` (`STREAM_MUSIC`)
      * com volume em 100%, duração ~780ms e liberação imediata de `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`.
      */
     private fun playMediaStreamTripleBeep880To1760(context: Context) {
+        stopAndReleaseBellPlayer()
         stopActiveTrackOnly(context)
         Thread {
             try {
@@ -678,6 +813,7 @@ object GymAudioEngine {
      */
     fun stopAllAndRelease(context: Context? = null) {
         pendingVoiceMessage = null
+        stopAndReleaseBellPlayer()
         stopActiveTrackOnly(context)
         runCatching { gymToneGenerator?.stopTone() }
         runCatching { gymTts?.stop() }

@@ -7216,24 +7216,28 @@ private fun PlayerScreenContent(viewModel: MainViewModel, gymFontScale: Float) {
                     enableDismissFromStartToEnd = false,
                     enableDismissFromEndToStart = true,
                     backgroundContent = {
-                        val color = when (dismissState.targetValue) {
-                            SwipeToDismissBoxValue.EndToStart -> Error
-                            else -> Color.Transparent
-                        }
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(vertical = 1.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(color),
-                            contentAlignment = Alignment.CenterEnd
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Delete,
-                                contentDescription = "Excluir Série",
-                                tint = Color.White,
-                                modifier = Modifier.padding(end = 16.dp).size(20.dp)
-                            )
+                        if (dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
+                            val color = when (dismissState.targetValue) {
+                                SwipeToDismissBoxValue.EndToStart -> Error
+                                else -> Color.Transparent
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(vertical = 1.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(color),
+                                contentAlignment = Alignment.CenterEnd
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Excluir Série",
+                                    tint = Color.White,
+                                    modifier = Modifier.padding(end = 16.dp).size(20.dp)
+                                )
+                            }
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize())
                         }
                     }
                 ) {
@@ -7355,7 +7359,8 @@ private fun PlayerScreenContent(viewModel: MainViewModel, gymFontScale: Float) {
                                 // Campo de Valor de Peso Clicável
                                 Box(
                                     modifier = Modifier
-                                        .padding(horizontal = 4.dp)
+                                        .weight(1f)
+                                        .padding(horizontal = 2.dp)
                                         .height(38.dp)
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(if (isActive) Color(0xFF00B0FF).copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
@@ -7364,40 +7369,38 @@ private fun PlayerScreenContent(viewModel: MainViewModel, gymFontScale: Float) {
                                             editTargetField = "weight"
                                             editWeightStr = formattedWeightStr
                                             com.example.utils.AudioSynth.playTickSound()
-                                        }
-                                        .padding(horizontal = 6.dp),
+                                        },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Row(
+                                        modifier = Modifier.padding(horizontal = 2.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.Center
                                     ) {
-                                        if (prSetIds.contains(set.id)) {
-                                            Icon(
-                                                imageVector = Icons.Default.EmojiEvents,
-                                                contentDescription = "Recorde Pessoal",
-                                                tint = Color(0xFFFFD700),
-                                                modifier = Modifier
-                                                    .size(12.dp)
-                                                    .padding(end = 2.dp)
-                                            )
-                                        }
                                         val isBwZero = displayWeightMain == "Peso Corporal"
                                         val isLbs = displayWeightUnit.startsWith("(")
+                                        val weightFontSize = when {
+                                            isBwZero -> 11.sp
+                                            isLbs -> 16.sp
+                                            displayWeightMain.length <= 3 -> 19.5.sp
+                                            displayWeightMain.length == 4 -> 17.sp
+                                            else -> 15.sp
+                                        }
                                         Text(
                                             text = displayWeightMain,
                                             color = if (isBwZero) Color(0xFF29B6F6) else Color.White,
-                                            fontSize = when {
-                                                isBwZero -> 11.sp
-                                                isLbs -> 16.sp
-                                                else -> 19.5.sp
-                                            },
+                                            fontSize = weightFontSize,
+                                            lineHeight = if (isBwZero) 11.5.sp else androidx.compose.ui.unit.TextUnit.Unspecified,
                                             fontWeight = FontWeight.ExtraBold,
+                                            textAlign = TextAlign.Center,
                                             style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum"),
-                                            maxLines = 1,
-                                            softWrap = false
+                                            maxLines = if (isBwZero) 2 else 1,
+                                            softWrap = isBwZero,
+                                            overflow = TextOverflow.Ellipsis
                                         )
-                                        if (displayWeightUnit.isNotEmpty()) {
+                                        val showWeightUnit = displayWeightUnit.isNotEmpty() &&
+                                            (isLbs || displayWeightMain.length < 4)
+                                        if (showWeightUnit) {
                                             Spacer(modifier = Modifier.width(2.dp))
                                             Text(
                                                 text = displayWeightUnit,
@@ -7405,9 +7408,21 @@ private fun PlayerScreenContent(viewModel: MainViewModel, gymFontScale: Float) {
                                                 fontSize = if (isLbs) 10.sp else 11.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 maxLines = 1,
-                                                softWrap = false
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         }
+                                    }
+                                    if (prSetIds.contains(set.id)) {
+                                        Icon(
+                                            imageVector = Icons.Default.EmojiEvents,
+                                            contentDescription = "Recorde Pessoal",
+                                            tint = Color(0xFFFFD700),
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .padding(top = 2.dp, end = 2.dp)
+                                                .size(10.dp)
+                                        )
                                     }
                                 }
 
@@ -7463,7 +7478,8 @@ private fun PlayerScreenContent(viewModel: MainViewModel, gymFontScale: Float) {
                                 // Campo de Valor de Repetições Clicável
                                 Box(
                                     modifier = Modifier
-                                        .padding(horizontal = 4.dp)
+                                        .weight(1f)
+                                        .padding(horizontal = 2.dp)
                                         .height(38.dp)
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(if (isActive) Color(0xFF00B0FF).copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
@@ -7472,32 +7488,48 @@ private fun PlayerScreenContent(viewModel: MainViewModel, gymFontScale: Float) {
                                             editTargetField = "reps"
                                             editRepsStr = "${set.reps}"
                                             com.example.utils.AudioSynth.playTickSound()
-                                        }
-                                        .padding(horizontal = 6.dp),
+                                        },
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Row(
+                                        modifier = Modifier.padding(horizontal = 2.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.Center
                                     ) {
+                                        val repsStr = "${set.reps}"
+                                        val isEachSide = com.example.utils.WeightCalculator.isEachSideReps(
+                                            context,
+                                            currentEx.name,
+                                            currentEx.equipment
+                                        )
+                                        val repsFontSize = when {
+                                            repsStr.length <= 3 -> 19.5.sp
+                                            repsStr.length == 4 -> 17.sp
+                                            else -> 15.sp
+                                        }
                                         Text(
-                                            text = "${set.reps}",
+                                            text = repsStr,
                                             color = Color.White,
-                                            fontSize = 19.5.sp,
+                                            fontSize = repsFontSize,
                                             fontWeight = FontWeight.ExtraBold,
                                             style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum"),
                                             maxLines = 1,
-                                            softWrap = false
+                                            softWrap = false,
+                                            overflow = TextOverflow.Ellipsis
                                         )
-                                        Spacer(modifier = Modifier.width(3.dp))
-                                        Text(
-                                            text = if (com.example.utils.WeightCalculator.isEachSideReps(context, currentEx.name, currentEx.equipment)) "reps/lado" else "reps",
-                                            color = Color(0xFF94A3B8),
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            maxLines = 1,
-                                            softWrap = false
-                                        )
+                                        val showRepsUnit = isEachSide || repsStr.length < 4
+                                        if (showRepsUnit) {
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Text(
+                                                text = if (isEachSide) "reps/lado" else "reps",
+                                                color = Color(0xFF94A3B8),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
                                 }
 

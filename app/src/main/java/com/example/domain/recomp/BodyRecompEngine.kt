@@ -163,17 +163,26 @@ object BodyRecompEngine {
     )
 
     /**
-     * Cria um registro em branco vinculado ao perfil ativo (nome, peso e IMC calculado se houver altura válida),
-     * sem herdar métricas de outros perfis. Demais campos permanecem zerados e são exibidos como "--".
+     * Cria um registro em branco vinculado ao perfil ativo (nome, foto e opcionalmente peso/IMC do perfil),
+     * sem herdar métricas de outros perfis. Quando `includeProfileWeight = false` (ex.: falha de OCR),
+     * todas as medições ficam zeradas (exibidas como "--").
      */
     fun createBlankProfileRecord(
         profile: UserProfileData?,
-        nowMillis: Long = System.currentTimeMillis()
+        nowMillis: Long = System.currentTimeMillis(),
+        includeProfileWeight: Boolean = true,
+        photoUri: String? = null
     ): BioimpedanceRecord {
         val sdf = SimpleDateFormat("dd/MM/yyyy - HH:mm", Locale.forLanguageTag("pt-BR"))
-        val weightKg = resolveValidWeightKgOrNull(profile) ?: 0f
+        val weightKg = if (includeProfileWeight) resolveValidWeightKgOrNull(profile) ?: 0f else 0f
         val heightCm = resolveValidHeightCmOrNull(profile)
-        val bmi = calculateAutoBmiOrNull(weightKg.takeIf { it > 0f }, heightCm)?.let { round1(it) } ?: 0f
+        val bmi = if (includeProfileWeight) {
+            calculateAutoBmiOrNull(weightKg.takeIf { it > 0f }, heightCm)?.let { round1(it) } ?: 0f
+        } else {
+            0f
+        }
+        val resolvedPhotoUri = photoUri?.takeIf { it.isNotBlank() }
+            ?: profile?.foto?.takeIf { it.isNotBlank() }
         return BioimpedanceRecord(
             id = "recomp_blank_${nowMillis}",
             timestampMillis = nowMillis,
@@ -194,7 +203,7 @@ object BodyRecompEngine {
             proteinPercent = 0f,
             bmrKcal = 0,
             metabolicAge = 0,
-            photoUri = null,
+            photoUri = resolvedPhotoUri,
             segmentalSummary = ""
         )
     }
@@ -528,7 +537,11 @@ object BodyRecompEngine {
         profileHeightCm: Float? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile)?.toFloat(),
         profile: UserProfileData? = WeightCalculator.activeUserProfile
     ): BioimpedanceRecord {
-        val base = fallbackBase ?: defaultFallbackRecord(profile, nowMillis)
+        val base = fallbackBase ?: createBlankProfileRecord(
+            profile = profile,
+            nowMillis = nowMillis,
+            includeProfileWeight = false
+        )
         return BioimpedanceImageParser.parseRelaxmedicOrFitdaysStructuredText(
             reconstructedText = rawText,
             fallbackBase = base,

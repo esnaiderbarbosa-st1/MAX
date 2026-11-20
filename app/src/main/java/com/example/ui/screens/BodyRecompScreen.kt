@@ -1979,12 +1979,18 @@ private fun WeeklyBioimpedanceCheckInDialog(
         editingRecord ?: BodyRecompEngine.createWeeklyCheckInDraft(latestRecord, profile = userProfile)
     }
 
-    var selectedTemplate by remember {
+    val availableTemplates = remember(userProfile) {
+        BioimpedanceImageParser.availableTemplatesForProfile(userProfile)
+    }
+
+    var selectedTemplate by remember(availableTemplates, editingRecord) {
         mutableStateOf(
             when {
-                editingRecord?.sourceApp?.contains("Relaxmedic", ignoreCase = true) == true ->
+                availableTemplates.isNotEmpty() &&
+                    editingRecord?.sourceApp?.contains("Relaxmedic", ignoreCase = true) == true ->
                     BioimpedanceDetectedTemplate.RELAXMEDIC_13_10
-                editingRecord?.sourceApp?.contains("Fitdays", ignoreCase = true) == true ->
+                availableTemplates.isNotEmpty() &&
+                    editingRecord?.sourceApp?.contains("Fitdays", ignoreCase = true) == true ->
                     BioimpedanceDetectedTemplate.FITDAYS_29_10
                 else -> BioimpedanceDetectedTemplate.MANUAL_ENTRY
             }
@@ -1992,6 +1998,8 @@ private fun WeeklyBioimpedanceCheckInDialog(
     }
     var parserHeadline by remember { mutableStateOf<String?>(null) }
     var parserConversionNote by remember { mutableStateOf<String?>(null) }
+    var lastParsedIndicatorsCount by remember { mutableStateOf<Int?>(null) }
+    var lastParseWasSavedTemplate by remember { mutableStateOf(false) }
 
     fun fmtOptFloat(v: Float, decimals: Int = 1): String =
         if (v > 0f) String.format(Locale.US, "%.${decimals}f", v) else ""
@@ -2029,20 +2037,20 @@ private fun WeeklyBioimpedanceCheckInDialog(
         dateTimeLabel = parsed.dateTimeLabel
         sourceAppText = parsed.sourceApp
         segmentalSummaryText = parsed.segmentalSummary
-        weightText = String.format(Locale.US, "%.1f", parsed.weightKg)
-        bmiText = String.format(Locale.US, "%.1f", parsed.bmi)
-        bfText = String.format(Locale.US, "%.1f", parsed.bodyFatPercent)
-        muscleRateText = String.format(Locale.US, "%.1f", parsed.muscleRatePercent)
-        ffmText = String.format(Locale.US, "%.1f", parsed.fatFreeMassKg)
-        subFatText = String.format(Locale.US, "%.1f", parsed.subcutaneousFatPercent)
-        visceralText = String.format(Locale.US, "%.0f", parsed.visceralFatIndex)
-        waterText = String.format(Locale.US, "%.1f", parsed.bodyWaterPercent)
-        skeletalPctText = String.format(Locale.US, "%.1f", parsed.skeletalMusclePercent)
-        muscleMassKgText = String.format(Locale.US, "%.1f", parsed.muscleMassKg)
-        boneMassText = String.format(Locale.US, "%.1f", parsed.boneMassKg)
-        proteinText = String.format(Locale.US, "%.1f", parsed.proteinPercent)
-        bmrText = parsed.bmrKcal.toString()
-        metAgeText = parsed.metabolicAge.toString()
+        weightText = fmtOptFloat(parsed.weightKg)
+        bmiText = fmtOptFloat(parsed.bmi)
+        bfText = fmtOptFloat(parsed.bodyFatPercent)
+        muscleRateText = fmtOptFloat(parsed.muscleRatePercent)
+        ffmText = fmtOptFloat(parsed.fatFreeMassKg)
+        subFatText = fmtOptFloat(parsed.subcutaneousFatPercent)
+        visceralText = fmtOptFloat(parsed.visceralFatIndex, 0)
+        waterText = fmtOptFloat(parsed.bodyWaterPercent)
+        skeletalPctText = fmtOptFloat(parsed.skeletalMusclePercent)
+        muscleMassKgText = fmtOptFloat(parsed.muscleMassKg)
+        boneMassText = fmtOptFloat(parsed.boneMassKg)
+        proteinText = fmtOptFloat(parsed.proteinPercent)
+        bmrText = fmtOptInt(parsed.bmrKcal)
+        metAgeText = fmtOptInt(parsed.metabolicAge)
         parsedExplicitFatMassKg = parsed.explicitFatMassKg
     }
 
@@ -2050,6 +2058,8 @@ private fun WeeklyBioimpedanceCheckInDialog(
         if (uri == null) return
         selectedImageUri = uri
         isExtractingReport = true
+        lastParsedIndicatorsCount = null
+        lastParseWasSavedTemplate = false
         parserHeadline = "Lendo relatório Relaxmedic / Fitdays via OCR..."
         parserConversionNote = "Reconstruindo as 2 colunas e extraindo os indicadores..."
         coroutineScope.launch {
@@ -2058,13 +2068,16 @@ private fun WeeklyBioimpedanceCheckInDialog(
                 uri = uri,
                 existingRecords = existingRecords,
                 fallbackBase = initialDraft,
-                profileHeightCm = profileHeightCm?.toFloat()
+                profileHeightCm = profileHeightCm?.toFloat(),
+                profile = userProfile
             )
             isExtractingReport = false
             previewBitmap = analysis.renderedBitmap
             selectedTemplate = analysis.detectedTemplate
             parserHeadline = analysis.statusHeadline
             parserConversionNote = analysis.conversionDetails
+            lastParsedIndicatorsCount = analysis.filledIndicatorsCount
+            lastParseWasSavedTemplate = false
             if (analysis.reconstructedOcrText.isNotBlank()) {
                 rawOcrPasteText = analysis.reconstructedOcrText
             }
@@ -2164,53 +2177,59 @@ private fun WeeklyBioimpedanceCheckInDialog(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding = PaddingValues(vertical = 14.dp)
                 ) {
-                    // Seletor Rápido: "Templates Reais Detectados (Fitdays 29/10 • 84,7 kg | Relaxmedic 13/10 • 85,7 kg | Entrada Manual)"
-                    item {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                text = "TEMPLATES REAIS DETECTADOS (SELEÇÃO RÁPIDA):",
-                                color = RecompCyan,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 0.4.sp
-                            )
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                BioimpedanceDetectedTemplate.entries.forEach { template ->
-                                    val isSelected = selectedTemplate == template
-                                    Surface(
-                                        onClick = {
-                                            AudioSynth.playTickSound()
-                                            selectedTemplate = template
-                                            val built = BioimpedanceImageParser.buildResultForTemplate(
-                                                template = template,
-                                                photoUri = selectedImageUri?.toString(),
-                                                fallbackBase = initialDraft
+                    // Importação explícita de leitura salva (visível apenas para perfis com metas pessoais)
+                    if (availableTemplates.isNotEmpty()) {
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = "IMPORTAR LEITURA SALVA:",
+                                    color = RecompCyan,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = 0.4.sp
+                                )
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    availableTemplates.forEach { template ->
+                                        val isSelected = selectedTemplate == template
+                                        Surface(
+                                            onClick = {
+                                                AudioSynth.playTickSound()
+                                                selectedTemplate = template
+                                                val built = BioimpedanceImageParser.buildResultForTemplate(
+                                                    template = template,
+                                                    photoUri = selectedImageUri?.toString(),
+                                                    fallbackBase = initialDraft,
+                                                    profile = userProfile
+                                                )
+                                                parserHeadline = built.statusHeadline
+                                                parserConversionNote = built.conversionDetails
+                                                lastParsedIndicatorsCount = built.filledIndicatorsCount
+                                                lastParseWasSavedTemplate =
+                                                    template != BioimpedanceDetectedTemplate.MANUAL_ENTRY
+                                                applyParsedRecord(built.record)
+                                            },
+                                            color = if (isSelected) RecompBlue.copy(alpha = 0.22f) else RecompCardBg,
+                                            border = BorderStroke(
+                                                1.dp,
+                                                if (isSelected) RecompCyan else RecompCardBorder
+                                            ),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text(
+                                                text = template.chipLabel,
+                                                color = if (isSelected) RecompCyan else RecompPrimaryText,
+                                                fontSize = 11.sp,
+                                                fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                                             )
-                                            parserHeadline = built.statusHeadline
-                                            parserConversionNote = built.conversionDetails
-                                            applyParsedRecord(built.record)
-                                        },
-                                        color = if (isSelected) RecompBlue.copy(alpha = 0.22f) else RecompCardBg,
-                                        border = BorderStroke(
-                                            1.dp,
-                                            if (isSelected) RecompCyan else RecompCardBorder
-                                        ),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text(
-                                            text = template.chipLabel,
-                                            color = if (isSelected) RecompCyan else RecompPrimaryText,
-                                            fontSize = 11.sp,
-                                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                                        )
+                                        }
                                     }
                                 }
                             }
@@ -2328,12 +2347,19 @@ private fun WeeklyBioimpedanceCheckInDialog(
                                     }
                                 }
 
-                                // Banner de confirmação da extração automática e conversão kg -> %
+                                // Banner de status da extração OCR (sucesso verde apenas quando todos os 14 indicadores foram lidos)
                                 if (parserHeadline != null) {
+                                    val isFullOcrSuccess = !lastParseWasSavedTemplate &&
+                                        lastParsedIndicatorsCount == BioimpedanceImageParser.TOTAL_EXPECTED_INDICATORS
+                                    val bannerAccent = when {
+                                        isExtractingReport || lastParseWasSavedTemplate -> RecompCyan
+                                        isFullOcrSuccess -> RecompGreen
+                                        else -> RecompAmber
+                                    }
                                     Surface(
-                                        color = RecompGreen.copy(alpha = 0.12f),
+                                        color = bannerAccent.copy(alpha = 0.12f),
                                         shape = RoundedCornerShape(8.dp),
-                                        border = BorderStroke(1.dp, RecompGreen.copy(alpha = 0.5f)),
+                                        border = BorderStroke(1.dp, bannerAccent.copy(alpha = 0.5f)),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Column(
@@ -2342,7 +2368,7 @@ private fun WeeklyBioimpedanceCheckInDialog(
                                         ) {
                                             Text(
                                                 text = parserHeadline ?: "",
-                                                color = RecompGreen,
+                                                color = bannerAccent,
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.ExtraBold
                                             )
@@ -2396,12 +2422,16 @@ private fun WeeklyBioimpedanceCheckInDialog(
                                             onClick = {
                                                 val parsedRes = BioimpedanceImageParser.parseRelaxmedicOrFitdaysStructuredText(
                                                     reconstructedText = rawOcrPasteText,
-                                                    fallbackBase = latestRecord,
+                                                    fallbackBase = initialDraft,
+                                                    photoUri = selectedImageUri?.toString(),
                                                     profileHeightCm = profileHeightCm?.toFloat()
                                                 )
-                                                applyParsedRecord(parsedRes.record)
+                                                selectedTemplate = parsedRes.detectedTemplate
                                                 parserHeadline = parsedRes.statusHeadline
                                                 parserConversionNote = parsedRes.conversionDetails
+                                                lastParsedIndicatorsCount = parsedRes.filledIndicatorsCount
+                                                lastParseWasSavedTemplate = false
+                                                applyParsedRecord(parsedRes.record)
                                                 showRawTextExtractor = false
                                                 Toast.makeText(
                                                     context,
@@ -2531,23 +2561,25 @@ private fun WeeklyBioimpedanceCheckInDialog(
                     Button(
                         onClick = {
                             AudioSynth.playTickSound()
-                            fun parseF(txt: String, fallback: Float): Float =
-                                txt.replace(",", ".").trim().toFloatOrNull() ?: fallback
+                            fun parseOptionalFloat(txt: String): Float =
+                                txt.replace(",", ".").trim().toFloatOrNull() ?: 0f
+                            fun parseOptionalInt(txt: String): Int =
+                                txt.trim().toIntOrNull() ?: 0
 
-                            val parsedWeight = parseF(weightText, initialDraft.weightKg)
+                            val parsedWeight = parseOptionalFloat(weightText)
                             // Se o usuário digitou Água, Proteína ou Músculo Esquelético em kg (padrão Relaxmedic),
                             // converte automaticamente para % ao salvar!
-                            val rawWater = parseF(waterText, initialDraft.bodyWaterPercent)
+                            val rawWater = parseOptionalFloat(waterText)
                             val effectiveWaterPct = if (rawWater in 25f..47.5f && parsedWeight > 50f) {
                                 BioimpedanceImageParser.convertKgMetricToPercent(rawWater, parsedWeight)
                             } else rawWater
 
-                            val rawProtein = parseF(proteinText, initialDraft.proteinPercent)
+                            val rawProtein = parseOptionalFloat(proteinText)
                             val effectiveProteinPct = if (rawProtein in 10f..18.2f && sourceAppText.contains("Relax", ignoreCase = true)) {
                                 BioimpedanceImageParser.convertKgMetricToPercent(rawProtein, parsedWeight)
                             } else rawProtein
 
-                            val rawSkeletal = parseF(skeletalPctText, initialDraft.skeletalMusclePercent)
+                            val rawSkeletal = parseOptionalFloat(skeletalPctText)
                             val effectiveSkeletalPct = if (rawSkeletal in 20f..37.5f && parsedWeight > 50f) {
                                 BioimpedanceImageParser.convertKgMetricToPercent(rawSkeletal, parsedWeight)
                             } else rawSkeletal
@@ -2563,21 +2595,21 @@ private fun WeeklyBioimpedanceCheckInDialog(
                                 timestampMillis = resolvedTimestamp,
                                 dateTimeLabel = finalDateLabel,
                                 athleteName = initialDraft.athleteName,
-                                sourceApp = sourceAppText.ifBlank { "Fitdays Oficial" },
+                                sourceApp = sourceAppText.ifBlank { "Entrada Manual" },
                                 weightKg = parsedWeight,
-                                bmi = parseF(bmiText, initialDraft.bmi),
-                                bodyFatPercent = parseF(bfText, initialDraft.bodyFatPercent),
-                                muscleRatePercent = parseF(muscleRateText, initialDraft.muscleRatePercent),
-                                fatFreeMassKg = parseF(ffmText, initialDraft.fatFreeMassKg),
-                                subcutaneousFatPercent = parseF(subFatText, initialDraft.subcutaneousFatPercent),
-                                visceralFatIndex = parseF(visceralText, initialDraft.visceralFatIndex),
+                                bmi = parseOptionalFloat(bmiText),
+                                bodyFatPercent = parseOptionalFloat(bfText),
+                                muscleRatePercent = parseOptionalFloat(muscleRateText),
+                                fatFreeMassKg = parseOptionalFloat(ffmText),
+                                subcutaneousFatPercent = parseOptionalFloat(subFatText),
+                                visceralFatIndex = parseOptionalFloat(visceralText),
                                 bodyWaterPercent = effectiveWaterPct,
                                 skeletalMusclePercent = effectiveSkeletalPct,
-                                muscleMassKg = parseF(muscleMassKgText, initialDraft.muscleMassKg),
-                                boneMassKg = parseF(boneMassText, initialDraft.boneMassKg),
+                                muscleMassKg = parseOptionalFloat(muscleMassKgText),
+                                boneMassKg = parseOptionalFloat(boneMassText),
                                 proteinPercent = effectiveProteinPct,
-                                bmrKcal = bmrText.trim().toIntOrNull() ?: initialDraft.bmrKcal,
-                                metabolicAge = metAgeText.trim().toIntOrNull() ?: initialDraft.metabolicAge,
+                                bmrKcal = parseOptionalInt(bmrText),
+                                metabolicAge = parseOptionalInt(metAgeText),
                                 photoUri = selectedImageUri?.toString() ?: editingRecord?.photoUri,
                                 segmentalSummary = segmentalSummaryText,
                                 explicitFatMassKg = parsedExplicitFatMassKg

@@ -10,6 +10,7 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.example.data.model.BioimpedanceRecord
+import com.example.data.model.UserProfileData
 import com.example.data.model.resolveValidHeightCmOrNull
 import com.example.utils.WeightCalculator
 import com.google.mlkit.vision.common.InputImage
@@ -41,21 +42,27 @@ enum class BioimpedanceDetectedTemplate(
 ) {
     FITDAYS_29_10(
         id = "fitdays_29_10",
-        chipLabel = "Fitdays 29/10 • 84,7 kg",
-        sourceTitle = "Fitdays Oficial (29/10/2026)",
-        summaryDescription = "14 indicadores + Limb Dados segmentares extraídos automaticamente do print Fitdays (84,7 kg • 23,0% BF)."
+        chipLabel = "Importar leitura salva: Fitdays 29/10",
+        sourceTitle = "Leitura salva • Fitdays (29/10/2026)",
+        summaryDescription = "Importa a leitura salva Fitdays (29/10/2026) para revisão antes de salvar."
     ),
     RELAXMEDIC_13_10(
         id = "relaxmedic_13_10",
-        chipLabel = "Relaxmedic 13/10 • 85,7 kg",
-        sourceTitle = "Relaxmedic Oficial (13/10/2026)",
-        summaryDescription = "Relatório Relaxmedic convertido automaticamente de kg para % (Água 44,9 kg → 52,4%, Proteína 17,4 kg → 20,3%, Músculo Esq. 34,8 kg → 40,6%)."
+        chipLabel = "Importar leitura salva: Relaxmedic 13/10",
+        sourceTitle = "Leitura salva • Relaxmedic (13/10/2026)",
+        summaryDescription = "Importa a leitura salva Relaxmedic (13/10/2026) convertida de kg para % para revisão antes de salvar."
     ),
     MANUAL_ENTRY(
         id = "manual_entry",
         chipLabel = "Entrada Manual",
         sourceTitle = "Preenchimento Manual / Editável",
         summaryDescription = "Edite livremente qualquer um dos 14 indicadores ou cole os dados brutos do aplicativo."
+    ),
+    NAO_DETECTADO(
+        id = "nao_detectado",
+        chipLabel = "Não detectado",
+        sourceTitle = "Leitura automática indisponível",
+        summaryDescription = "Não foi possível ler este exame automaticamente. Preencha os valores manualmente."
     )
 }
 
@@ -80,7 +87,27 @@ data class ParsedBioimpedanceResult(
  */
 object BioimpedanceImageParser {
 
+    const val TOTAL_EXPECTED_INDICATORS = 14
+    const val OCR_FAILURE_HEADLINE =
+        "Não foi possível ler este exame automaticamente. Preencha os valores manualmente."
+
     private val ptBr: Locale = Locale.forLanguageTag("pt-BR")
+
+    /**
+     * Retorna os chips de importação de leitura salva disponíveis para o perfil ativo.
+     * Apenas perfis com metas pessoais configuradas (`hasPersonalGoals`) recebem os chips.
+     */
+    fun availableTemplatesForProfile(profile: UserProfileData?): List<BioimpedanceDetectedTemplate> {
+        return if (BioimpedanceReferences.hasPersonalGoals(profile)) {
+            listOf(
+                BioimpedanceDetectedTemplate.FITDAYS_29_10,
+                BioimpedanceDetectedTemplate.RELAXMEDIC_13_10,
+                BioimpedanceDetectedTemplate.MANUAL_ENTRY
+            )
+        } else {
+            emptyList()
+        }
+    }
 
     private data class OcrPositionedPiece(
         val text: String,
@@ -103,7 +130,8 @@ object BioimpedanceImageParser {
         uri: Uri,
         existingRecords: List<BioimpedanceRecord>,
         fallbackBase: BioimpedanceRecord,
-        profileHeightCm: Float? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile)?.toFloat()
+        profileHeightCm: Float? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile)?.toFloat(),
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
     ): ParsedBioimpedanceResult = withContext(Dispatchers.IO) {
         val fileName = queryDisplayName(context, uri)
         val mimeType = runCatching { context.contentResolver.getType(uri) ?: "" }.getOrDefault("")
@@ -132,13 +160,14 @@ object BioimpedanceImageParser {
             }
         }
 
-        // Fallback caso a imagem não contenha texto legível no OCR
+        // Fallback caso a imagem não contenha texto legível ou menos de 4 indicadores no OCR
         analyzeAttachedImage(
             context = context,
             uri = uri,
             bitmap = bitmap,
             existingRecords = existingRecords,
-            fallbackBase = fallbackBase
+            fallbackBase = fallbackBase,
+            profile = profile
         ).copy(renderedBitmap = bitmap)
     }
 
@@ -674,8 +703,8 @@ object BioimpedanceImageParser {
             }
         }
 
-        // Resolução de Conversões Automáticas kg -> % e Fallbacks Matemáticos Exatos
-        val finalWeightKg = weightKg ?: fallbackBase.weightKg
+        // Resolução de Conversões Automáticas kg -> % e Fallbacks Matemáticos Exatos (apenas com dados lidos)
+        val finalWeightKg = weightKg ?: 0f
 
         if (bodyFatPercent == null && fatMassKg != null && finalWeightKg > 30f) {
             bodyFatPercent = convertKgMetricToPercent(fatMassKg!!, finalWeightKg)
@@ -708,7 +737,7 @@ object BioimpedanceImageParser {
             }
         }
         if (fatFreeMassKg == null && weightKg != null && (fatMassKg != null || bodyFatPercent != null)) {
-            val fatKg = fatMassKg ?: (finalWeightKg * ((bodyFatPercent ?: 20f) / 100f))
+            val fatKg = fatMassKg ?: (finalWeightKg * (bodyFatPercent!! / 100f))
             fatFreeMassKg = (((finalWeightKg - fatKg) * 10f).roundToInt() / 10f)
         }
 
@@ -749,61 +778,83 @@ object BioimpedanceImageParser {
                 append("Segmentar: ")
                 append(segmentalParts.joinToString(" • "))
             }
-            if (isEmpty()) {
-                append(fallbackBase.segmentalSummary)
-            }
         }
 
+        val resolvedSourceApp = when {
+            filledCount == 0 -> "Sem registro"
+            isRelaxmedicSheet -> "Relaxmedic / Fitdays"
+            else -> "Fitdays / Relaxmedic"
+        }
+
+        // Campos de medição não lidos permanecem vazios (0 / exibidos como "--"); fallbackBase fornece apenas metadados.
         val record = BioimpedanceRecord(
             id = "recomp_${resolvedTimestamp}",
             timestampMillis = resolvedTimestamp,
             dateTimeLabel = resolvedDateLabel,
             athleteName = fallbackBase.athleteName,
-            sourceApp = if (isRelaxmedicSheet) "Relaxmedic / Fitdays" else "Fitdays / Relaxmedic",
+            sourceApp = resolvedSourceApp,
             weightKg = round1(finalWeightKg),
-            bmi = round1(bmi ?: fallbackBase.bmi),
-            bodyFatPercent = round1(bodyFatPercent ?: fallbackBase.bodyFatPercent),
-            muscleRatePercent = round1(muscleRatePercent ?: fallbackBase.muscleRatePercent),
-            fatFreeMassKg = round1(fatFreeMassKg ?: fallbackBase.fatFreeMassKg),
-            subcutaneousFatPercent = round1(subcutaneousFatPercent ?: fallbackBase.subcutaneousFatPercent),
-            visceralFatIndex = round1(visceralFatIndex ?: fallbackBase.visceralFatIndex),
-            bodyWaterPercent = round1(bodyWaterPercent ?: fallbackBase.bodyWaterPercent),
-            skeletalMusclePercent = round1(skeletalMusclePercent ?: fallbackBase.skeletalMusclePercent),
-            muscleMassKg = round1(muscleMassKg ?: fallbackBase.muscleMassKg),
-            boneMassKg = round1(boneMassKg ?: fallbackBase.boneMassKg),
-            proteinPercent = round1(proteinPercent ?: fallbackBase.proteinPercent),
-            bmrKcal = bmrKcal ?: fallbackBase.bmrKcal,
-            metabolicAge = metabolicAge ?: fallbackBase.metabolicAge,
-            photoUri = photoUri,
+            bmi = bmi?.let { round1(it) } ?: 0f,
+            bodyFatPercent = bodyFatPercent?.let { round1(it) } ?: 0f,
+            muscleRatePercent = muscleRatePercent?.let { round1(it) } ?: 0f,
+            fatFreeMassKg = fatFreeMassKg?.let { round1(it) } ?: 0f,
+            subcutaneousFatPercent = subcutaneousFatPercent?.let { round1(it) } ?: 0f,
+            visceralFatIndex = visceralFatIndex?.let { round1(it) } ?: 0f,
+            bodyWaterPercent = bodyWaterPercent?.let { round1(it) } ?: 0f,
+            skeletalMusclePercent = skeletalMusclePercent?.let { round1(it) } ?: 0f,
+            muscleMassKg = muscleMassKg?.let { round1(it) } ?: 0f,
+            boneMassKg = boneMassKg?.let { round1(it) } ?: 0f,
+            proteinPercent = proteinPercent?.let { round1(it) } ?: 0f,
+            bmrKcal = bmrKcal ?: 0,
+            metabolicAge = metabolicAge ?: 0,
+            photoUri = photoUri ?: fallbackBase.photoUri,
             segmentalSummary = finalSegmentalSummary,
             explicitFatMassKg = fatMassKg?.let { round1(it) }
         )
 
-        val headline = "✅ Relatório Relaxmedic/Fitdays lido com sucesso! $filledCount indicadores preenchidos automaticamente."
-        val details = buildString {
-            append(
-                String.format(
-                    ptBr,
-                    "Peso: %.1f kg • Gordura: %.1f%% (%.1f kg) • Músc. Esq.: %.1f%% • Visceral: %.0f • TMB: %d kcal",
-                    record.weightKg,
-                    record.bodyFatPercent,
-                    record.fatMassKg,
-                    record.skeletalMusclePercent,
-                    record.visceralFatIndex,
-                    record.bmrKcal
-                )
-            )
-            if (bodyScore != null) {
-                append(" • Score: ${bodyScore}/100")
+        val headline = when {
+            filledCount == 0 -> OCR_FAILURE_HEADLINE
+            filledCount >= TOTAL_EXPECTED_INDICATORS ->
+                "✅ Relatório lido com sucesso! $filledCount de $TOTAL_EXPECTED_INDICATORS indicadores preenchidos automaticamente."
+            else ->
+                "$filledCount de $TOTAL_EXPECTED_INDICATORS indicadores lidos. Preencha os demais."
+        }
+
+        val details = if (filledCount == 0) {
+            "Nenhum indicador reconhecido automaticamente."
+        } else {
+            val parts = mutableListOf<String>()
+            if (record.weightKg > 0f) {
+                parts.add(String.format(ptBr, "Peso: %.1f kg", record.weightKg))
             }
+            if (record.bodyFatPercent > 0f) {
+                if (record.fatMassKg > 0f) {
+                    parts.add(String.format(ptBr, "Gordura: %.1f%% (%.1f kg)", record.bodyFatPercent, record.fatMassKg))
+                } else {
+                    parts.add(String.format(ptBr, "Gordura: %.1f%%", record.bodyFatPercent))
+                }
+            }
+            if (record.skeletalMusclePercent > 0f) {
+                parts.add(String.format(ptBr, "Músc. Esq.: %.1f%%", record.skeletalMusclePercent))
+            }
+            if (record.visceralFatIndex > 0f) {
+                parts.add(String.format(ptBr, "Visceral: %.0f", record.visceralFatIndex))
+            }
+            if (record.bmrKcal > 0) {
+                parts.add(String.format(ptBr, "TMB: %d kcal", record.bmrKcal))
+            }
+            if (bodyScore != null) {
+                parts.add("Score: ${bodyScore}/100")
+            }
+            parts.joinToString(" • ")
         }
 
         return ParsedBioimpedanceResult(
             record = record,
-            detectedTemplate = if (isRelaxmedicSheet) {
-                BioimpedanceDetectedTemplate.RELAXMEDIC_13_10
+            detectedTemplate = if (filledCount == 0) {
+                BioimpedanceDetectedTemplate.NAO_DETECTADO
             } else {
-                BioimpedanceDetectedTemplate.FITDAYS_29_10
+                BioimpedanceDetectedTemplate.MANUAL_ENTRY
             },
             statusHeadline = headline,
             conversionDetails = details,
@@ -961,106 +1012,139 @@ object BioimpedanceImageParser {
     private fun round1(value: Float): Float = ((value * 10f).roundToInt() / 10f)
 
     /**
-     * Analisa sincronicamente metadados/assinatura (fallback caso OCR não esteja disponível).
+     * Constrói o resultado padrão de falha de OCR: registro em branco do perfil ativo
+     * (sem peso nem métricas preenchidas), mantendo nome e foto do perfil/anexo, sem mensagem de sucesso.
+     */
+    fun buildOcrFailureResult(
+        profile: UserProfileData? = WeightCalculator.activeUserProfile,
+        photoUri: String? = null,
+        nowMillis: Long = System.currentTimeMillis()
+    ): ParsedBioimpedanceResult {
+        val blankRecord = BodyRecompEngine.createBlankProfileRecord(
+            profile = profile,
+            nowMillis = nowMillis,
+            includeProfileWeight = false,
+            photoUri = photoUri
+        )
+        return ParsedBioimpedanceResult(
+            record = blankRecord,
+            detectedTemplate = BioimpedanceDetectedTemplate.NAO_DETECTADO,
+            statusHeadline = OCR_FAILURE_HEADLINE,
+            conversionDetails = "Nenhum valor foi preenchido automaticamente.",
+            wasConvertedFromKgToPercent = false,
+            filledIndicatorsCount = 0
+        )
+    }
+
+    /**
+     * Lógica pura (sem Context) executada quando o OCR falha ou lê menos de 4 indicadores.
+     * Nunca escolhe template automaticamente por nome de arquivo, assinatura visual ou pesos já salvos.
+     */
+    fun analyzeAttachedImageWithoutOcr(
+        fileName: String? = null,
+        photoUri: String? = null,
+        existingRecords: List<BioimpedanceRecord> = emptyList(),
+        profile: UserProfileData? = WeightCalculator.activeUserProfile,
+        nowMillis: Long = System.currentTimeMillis()
+    ): ParsedBioimpedanceResult {
+        // Ignora intencionalmente fileName e existingRecords para nunca inventar leitura por template.
+        return buildOcrFailureResult(
+            profile = profile,
+            photoUri = photoUri,
+            nowMillis = nowMillis
+        )
+    }
+
+    /**
+     * Chamado quando o OCR falha ou lê menos de 4 indicadores.
+     * Retorna sempre um resultado de falha com registro em branco do perfil ativo.
      */
     fun analyzeAttachedImage(
         context: Context,
         uri: Uri,
         bitmap: Bitmap?,
         existingRecords: List<BioimpedanceRecord>,
-        fallbackBase: BioimpedanceRecord
+        fallbackBase: BioimpedanceRecord,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
     ): ParsedBioimpedanceResult {
         return runCatching {
-            val fileName = queryDisplayName(context, uri).lowercase(ptBr)
-            val visualSignature = analyzeBitmapSignature(bitmap)
-
-            val isExplicitRelaxmedic = fileName.contains("relax") ||
-                fileName.contains("85") ||
-                fileName.contains("13_10") ||
-                fileName.contains("13-10") ||
-                fileName.contains("1310") ||
-                visualSignature == VisualReportType.RELAXMEDIC_SHEET
-
-            val isExplicitFitdays = fileName.contains("fitdays") ||
-                fileName.contains("84") ||
-                fileName.contains("29_10") ||
-                fileName.contains("29-10") ||
-                fileName.contains("2910") ||
-                visualSignature == VisualReportType.FITDAYS_VERTICAL
-
-            val selectedTemplate = when {
-                isExplicitRelaxmedic -> BioimpedanceDetectedTemplate.RELAXMEDIC_13_10
-                isExplicitFitdays -> BioimpedanceDetectedTemplate.FITDAYS_29_10
-                else -> {
-                    val hasFitdays847 = existingRecords.any { abs(it.weightKg - 84.7f) < 0.05f }
-                    val hasRelax857 = existingRecords.any { abs(it.weightKg - 85.7f) < 0.05f }
-                    when {
-                        !hasFitdays847 -> BioimpedanceDetectedTemplate.FITDAYS_29_10
-                        !hasRelax857 -> BioimpedanceDetectedTemplate.RELAXMEDIC_13_10
-                        visualSignature == VisualReportType.RELAXMEDIC_SHEET -> BioimpedanceDetectedTemplate.RELAXMEDIC_13_10
-                        else -> BioimpedanceDetectedTemplate.FITDAYS_29_10
-                    }
-                }
-            }
-
-            buildResultForTemplate(
-                template = selectedTemplate,
+            val fileName = queryDisplayName(context, uri)
+            analyzeAttachedImageWithoutOcr(
+                fileName = fileName,
                 photoUri = uri.toString(),
-                fallbackBase = fallbackBase
+                existingRecords = existingRecords,
+                profile = profile
             )
         }.getOrElse {
-            buildResultForTemplate(
-                template = BioimpedanceDetectedTemplate.FITDAYS_29_10,
-                photoUri = uri.toString(),
-                fallbackBase = fallbackBase
+            buildOcrFailureResult(
+                profile = profile,
+                photoUri = uri.toString()
             )
         }
     }
 
     /**
-     * Constrói o resultado estruturado para qualquer um dos templates reais detectados ou selecionados pelo usuário.
+     * Constrói o resultado para seleção explícita do usuário nos chips de "Importar leitura salva"
+     * em `BodyRecompScreen`. Os templates `FITDAYS_29_10` e `RELAXMEDIC_13_10` só são permitidos
+     * quando `BioimpedanceReferences.hasPersonalGoals(profile)` é `true`.
      */
     fun buildResultForTemplate(
         template: BioimpedanceDetectedTemplate,
         photoUri: String?,
-        fallbackBase: BioimpedanceRecord
+        fallbackBase: BioimpedanceRecord,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
     ): ParsedBioimpedanceResult {
+        val allowSavedTemplates = BioimpedanceReferences.hasPersonalGoals(profile)
         return when (template) {
             BioimpedanceDetectedTemplate.FITDAYS_29_10 -> {
+                if (!allowSavedTemplates) {
+                    return buildOcrFailureResult(profile = profile, photoUri = photoUri)
+                }
                 val rec = BodyRecompEngine.createOfficialCheckIn3FitdaysRecord().copy(
                     photoUri = photoUri ?: fallbackBase.photoUri
                 )
                 ParsedBioimpedanceResult(
                     record = rec,
                     detectedTemplate = BioimpedanceDetectedTemplate.FITDAYS_29_10,
-                    statusHeadline = "✅ Relatório Relaxmedic/Fitdays lido com sucesso! 14 indicadores preenchidos automaticamente.",
-                    conversionDetails = "14 indicadores + Limb Dados (Braços 1,1 kg | Tronco 9,2 kg | Pernas 3,4 kg) carregados com sucesso.",
+                    statusHeadline = "Leitura salva importada (Fitdays 29/10). Confira antes de salvar.",
+                    conversionDetails = "Importação manual da leitura salva Fitdays (84,7 kg • 23,0% BF).",
                     wasConvertedFromKgToPercent = false,
-                    filledIndicatorsCount = 14
+                    filledIndicatorsCount = TOTAL_EXPECTED_INDICATORS
                 )
             }
             BioimpedanceDetectedTemplate.RELAXMEDIC_13_10 -> {
+                if (!allowSavedTemplates) {
+                    return buildOcrFailureResult(profile = profile, photoUri = photoUri)
+                }
                 val rec = BodyRecompEngine.createOfficialCheckIn2RelaxmedicRecord().copy(
                     photoUri = photoUri ?: fallbackBase.photoUri
                 )
                 ParsedBioimpedanceResult(
                     record = rec,
                     detectedTemplate = BioimpedanceDetectedTemplate.RELAXMEDIC_13_10,
-                    statusHeadline = "✅ Relatório Relaxmedic/Fitdays lido com sucesso! 14 indicadores preenchidos automaticamente.",
-                    conversionDetails = "Conversão automática kg → % aplicada: Água 44,9 kg (52,4%) • Proteína 17,4 kg (20,3%) • Músculo 62,3 kg (72,7%) • Músc. Esq. 34,8 kg (40,6%).",
+                    statusHeadline = "Leitura salva importada (Relaxmedic 13/10). Confira antes de salvar.",
+                    conversionDetails = "Importação manual da leitura salva Relaxmedic convertida kg → % (Água 52,4% • Proteína 20,3% • Músc. Esq. 40,6%).",
                     wasConvertedFromKgToPercent = true,
-                    filledIndicatorsCount = 14
+                    filledIndicatorsCount = TOTAL_EXPECTED_INDICATORS
                 )
             }
             BioimpedanceDetectedTemplate.MANUAL_ENTRY -> {
+                val blank = BodyRecompEngine.createBlankProfileRecord(
+                    profile = profile,
+                    includeProfileWeight = false,
+                    photoUri = photoUri ?: fallbackBase.photoUri
+                )
                 ParsedBioimpedanceResult(
-                    record = fallbackBase.copy(photoUri = photoUri ?: fallbackBase.photoUri),
+                    record = blank,
                     detectedTemplate = BioimpedanceDetectedTemplate.MANUAL_ENTRY,
                     statusHeadline = "Modo de Edição Manual Ativo",
-                    conversionDetails = "Ajuste qualquer um dos 14 indicadores abaixo antes de salvar.",
+                    conversionDetails = "Preencha os indicadores abaixo antes de salvar.",
                     wasConvertedFromKgToPercent = false,
                     filledIndicatorsCount = 0
                 )
+            }
+            BioimpedanceDetectedTemplate.NAO_DETECTADO -> {
+                buildOcrFailureResult(profile = profile, photoUri = photoUri)
             }
         }
     }
@@ -1079,56 +1163,6 @@ object BioimpedanceImageParser {
     fun convertPercentMetricToKg(metricPercent: Float, totalWeightKg: Float): Float {
         if (totalWeightKg <= 10f || metricPercent <= 0f) return 0f
         return (((metricPercent / 100f) * totalWeightKg) * 10f).roundToInt() / 10f
-    }
-
-    private enum class VisualReportType {
-        FITDAYS_VERTICAL,
-        RELAXMEDIC_SHEET,
-        UNKNOWN
-    }
-
-    private fun analyzeBitmapSignature(bitmap: Bitmap?): VisualReportType {
-        if (bitmap == null || bitmap.width <= 0 || bitmap.height <= 0) return VisualReportType.UNKNOWN
-        return runCatching {
-            val w = bitmap.width
-            val h = bitmap.height
-            val aspectRatio = h.toFloat() / w.toFloat()
-
-            var tealOrCyanCount = 0
-            var brightWhiteCount = 0
-            var totalSamples = 0
-
-            val stepX = (w / 24).coerceAtLeast(1)
-            val stepY = (h / 32).coerceAtLeast(1)
-
-            for (y in 0 until h step stepY) {
-                for (x in 0 until w step stepX) {
-                    val pixel = bitmap.getPixel(x, y)
-                    val r = (pixel shr 16) and 0xFF
-                    val g = (pixel shr 8) and 0xFF
-                    val b = pixel and 0xFF
-                    totalSamples++
-
-                    if (g > 130 && b > 120 && r < 110 && (g - r) > 35) {
-                        tealOrCyanCount++
-                    }
-                    if (r > 235 && g > 235 && b > 235) {
-                        brightWhiteCount++
-                    }
-                }
-            }
-
-            if (totalSamples == 0) return@runCatching VisualReportType.UNKNOWN
-            val tealRatio = tealOrCyanCount.toFloat() / totalSamples.toFloat()
-            val whiteRatio = brightWhiteCount.toFloat() / totalSamples.toFloat()
-
-            when {
-                aspectRatio < 1.35f -> VisualReportType.RELAXMEDIC_SHEET
-                tealRatio >= 0.035f -> VisualReportType.FITDAYS_VERTICAL
-                whiteRatio >= 0.80f && tealRatio < 0.015f -> VisualReportType.RELAXMEDIC_SHEET
-                else -> VisualReportType.FITDAYS_VERTICAL
-            }
-        }.getOrDefault(VisualReportType.UNKNOWN)
     }
 
     private fun queryDisplayName(context: Context, uri: Uri): String {
