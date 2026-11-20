@@ -18,7 +18,8 @@ enum class IndicatorStatus(
     EXCELENTE(labelPt = "Excelente", badgeColorHex = 0xFF00E5FF),
     ALTO(labelPt = "Alto", badgeColorHex = 0xFFFF5252),
     SOBREPESO(labelPt = "Sobrepeso", badgeColorHex = 0xFFFFB300),
-    MEDIO_RISCO(labelPt = "Risco Médio", badgeColorHex = 0xFFFF7043)
+    MEDIO_RISCO(labelPt = "Risco Médio", badgeColorHex = 0xFFFF7043),
+    NEUTRO(labelPt = "—", badgeColorHex = 0xFF94A3B8)
 }
 
 /**

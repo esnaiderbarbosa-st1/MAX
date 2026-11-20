@@ -19,7 +19,7 @@ object BioimpedanceParser {
     fun parseBioimpedanceText(text: String): BioimpedanceData {
         val parsed = BioimpedanceImageParser.parseRelaxmedicOrFitdaysStructuredText(
             reconstructedText = text,
-            fallbackBase = BodyRecompEngine.createOfficialCheckIn3FitdaysRecord()
+            fallbackBase = BodyRecompEngine.defaultFallbackRecord(WeightCalculator.activeUserProfile)
         ).record
 
         return BioimpedanceData(

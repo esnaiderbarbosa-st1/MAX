@@ -8,7 +8,10 @@ import com.example.data.model.PhysiologicalGoalProgress
 import com.example.data.model.RecompClassification
 import com.example.data.model.RecompDeltaItem
 import com.example.data.model.RecompStepCardSummary
+import com.example.data.model.UserProfileData
+import com.example.data.model.calculateAutoBmiOrNull
 import com.example.data.model.resolveValidHeightCmOrNull
+import com.example.data.model.resolveValidWeightKgOrNull
 import com.example.utils.WeightCalculator
 import org.json.JSONArray
 import org.json.JSONObject
@@ -41,8 +44,7 @@ object BodyRecompEngine {
     private const val KEY_TIMELINE_MIGRATION_VERSION = "timeline_migration_version"
     private const val CURRENT_MIGRATION_VERSION = 4 // v4: deduplicação de check-ins no mesmo dia + reparo Tronco/Massa Gorda/Data
 
-    // Metas fisiológicas de referência para Recomposição Híbrida (Altura 187 cm • Meta Hídrica 4,2 L/dia)
-    const val ATHLETE_HEIGHT_CM = 187f
+    // Metas fisiológicas pessoais de referência (usadas apenas quando BioimpedanceReferences.hasPersonalGoals(profile) == true)
     const val TARGET_WATER_LITERS_PER_DAY = 4.2f
     const val TARGET_BODY_FAT_PERCENT = 18.0f
     const val TARGET_VISCERAL_FAT_INDEX = 9.0f
@@ -161,17 +163,73 @@ object BodyRecompEngine {
     )
 
     /**
-     * Carrega todos os registros de bioimpedância ordenados cronologicamente (do Marco Zero ao mais recente).
-     * Inclui rotina de auto-reparo (`migrateOrFixDuplicateBaselineRecords`) que detecta registros antigos
-     * repetidos de `92.4 kg` (sem variação real) e atualiza automaticamente para a linha do tempo real
-     * de 3 etapas (`95.9 kg` -> `85.7 kg` -> `84.7 kg`), sincronizando peso (`84.7 kg`) e TMB (`1778 kcal`).
+     * Cria um registro em branco vinculado ao perfil ativo (nome, peso e IMC calculado se houver altura válida),
+     * sem herdar métricas de outros perfis. Demais campos permanecem zerados e são exibidos como "--".
      */
-    fun loadRecords(context: Context): List<BioimpedanceRecord> {
+    fun createBlankProfileRecord(
+        profile: UserProfileData?,
+        nowMillis: Long = System.currentTimeMillis()
+    ): BioimpedanceRecord {
+        val sdf = SimpleDateFormat("dd/MM/yyyy - HH:mm", Locale.forLanguageTag("pt-BR"))
+        val weightKg = resolveValidWeightKgOrNull(profile) ?: 0f
+        val heightCm = resolveValidHeightCmOrNull(profile)
+        val bmi = calculateAutoBmiOrNull(weightKg.takeIf { it > 0f }, heightCm)?.let { round1(it) } ?: 0f
+        return BioimpedanceRecord(
+            id = "recomp_blank_${nowMillis}",
+            timestampMillis = nowMillis,
+            dateTimeLabel = sdf.format(Date(nowMillis)),
+            athleteName = profile?.nome?.takeIf { it.isNotBlank() } ?: "Atleta",
+            sourceApp = "Sem registro",
+            weightKg = weightKg,
+            bmi = bmi,
+            bodyFatPercent = 0f,
+            muscleRatePercent = 0f,
+            fatFreeMassKg = 0f,
+            subcutaneousFatPercent = 0f,
+            visceralFatIndex = 0f,
+            bodyWaterPercent = 0f,
+            skeletalMusclePercent = 0f,
+            muscleMassKg = 0f,
+            boneMassKg = 0f,
+            proteinPercent = 0f,
+            bmrKcal = 0,
+            metabolicAge = 0,
+            photoUri = null,
+            segmentalSummary = ""
+        )
+    }
+
+    /**
+     * Retorna a base padrão de fallback para o perfil: apenas o perfil com metas pessoais configuradas
+     * (Esnaider) usa o check-in oficial como fallback; demais perfis recebem um registro em branco próprio.
+     */
+    fun defaultFallbackRecord(
+        profile: UserProfileData? = WeightCalculator.activeUserProfile,
+        nowMillis: Long = System.currentTimeMillis()
+    ): BioimpedanceRecord {
+        return if (BioimpedanceReferences.hasPersonalGoals(profile)) {
+            createOfficialCheckIn3FitdaysRecord()
+        } else {
+            createBlankProfileRecord(profile, nowMillis)
+        }
+    }
+
+    /**
+     * Carrega todos os registros de bioimpedância ordenados cronologicamente (do Marco Zero ao mais recente).
+     * Semeia a linha do tempo oficial de 3 etapas apenas para o perfil Esnaider; para outros perfis,
+     * não semeia registros de terceiros.
+     */
+    fun loadRecords(
+        context: Context,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
+    ): List<BioimpedanceRecord> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val rawJson = prefs.getString(KEY_RECORDS_JSON, null)
         val savedMigrationVer = prefs.getInt(KEY_TIMELINE_MIGRATION_VERSION, 0)
+        val allowOfficialSeed = BioimpedanceReferences.hasPersonalGoals(profile)
 
         if (rawJson.isNullOrBlank()) {
+            if (!allowOfficialSeed) return emptyList()
             val seedList = createOfficialDefaultTimeline()
             saveRecords(context, seedList)
             prefs.edit().putInt(KEY_TIMELINE_MIGRATION_VERSION, CURRENT_MIGRATION_VERSION).apply()
@@ -184,11 +242,12 @@ object BodyRecompEngine {
             val list = mutableListOf<BioimpedanceRecord>()
             for (i in 0 until array.length()) {
                 val obj = array.optJSONObject(i) ?: continue
-                list.add(fromJson(obj))
+                list.add(fromJson(obj, profile))
             }
             val healed = migrateOrFixDuplicateBaselineRecords(
                 loaded = list,
-                savedMigrationVersion = savedMigrationVer
+                savedMigrationVersion = savedMigrationVer,
+                profile = profile
             )
             if (healed != list || savedMigrationVer < CURRENT_MIGRATION_VERSION) {
                 saveRecords(context, healed)
@@ -197,6 +256,7 @@ object BodyRecompEngine {
             healed.lastOrNull()?.let { syncGlobalAthleteWeightAndBmr(it) }
             healed
         } catch (_: Exception) {
+            if (!allowOfficialSeed) return emptyList()
             val seedList = createOfficialDefaultTimeline()
             saveRecords(context, seedList)
             prefs.edit().putInt(KEY_TIMELINE_MIGRATION_VERSION, CURRENT_MIGRATION_VERSION).apply()
@@ -207,15 +267,16 @@ object BodyRecompEngine {
 
     /**
      * Rotina de migração/auto-reparo:
-     * Se o banco local contiver os registros repetidos de `92.4 kg` ou o baseline antigo sem variação real,
-     * substitui pelos 3 registros históricos reais do atleta Esnaider (`95.9 kg`, `85.7 kg`, `84.7 kg`),
-     * preservando eventuais registros customizados que o usuário tenha criado com outros pesos.
+     * Para o perfil Esnaider, substitui registros legados repetidos de `92.4 kg` pelos 3 registros
+     * históricos oficiais, preservando check-ins customizados. Para demais perfis, não semeia registros oficiais.
      */
     internal fun migrateOrFixDuplicateBaselineRecords(
         loaded: List<BioimpedanceRecord>,
-        savedMigrationVersion: Int
+        savedMigrationVersion: Int,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
     ): List<BioimpedanceRecord> {
-        if (loaded.isEmpty()) return createOfficialDefaultTimeline()
+        val allowOfficialSeed = BioimpedanceReferences.hasPersonalGoals(profile)
+        if (loaded.isEmpty()) return if (allowOfficialSeed) createOfficialDefaultTimeline() else emptyList()
 
         // Remove todos os registros legados de 92.4 kg (que geravam variação 0.0 kg)
         val nonLegacyRecords = loaded.filterNot { rec ->
@@ -228,7 +289,7 @@ object BodyRecompEngine {
         val distinctWeights = loaded.map { (it.weightKg * 10f).roundToInt() }.distinct()
         val hasAllSameWeight = loaded.size >= 2 && distinctWeights.size == 1
 
-        val baseList = if (nonLegacyRecords.isEmpty() || hasAllSameWeight || savedMigrationVersion < 3) {
+        val baseList = if (allowOfficialSeed && (nonLegacyRecords.isEmpty() || hasAllSameWeight || savedMigrationVersion < 3)) {
             val official3 = createOfficialDefaultTimeline()
             val customExtras = nonLegacyRecords.filter { rec ->
                 abs(rec.weightKg - 95.9f) >= 0.08f &&
@@ -289,7 +350,11 @@ object BodyRecompEngine {
             }
         }
 
-        return if (deduplicated.isEmpty()) createOfficialDefaultTimeline() else deduplicated.sortedBy { it.timestampMillis }
+        return if (deduplicated.isEmpty()) {
+            if (allowOfficialSeed) createOfficialDefaultTimeline() else emptyList()
+        } else {
+            deduplicated.sortedBy { it.timestampMillis }
+        }
     }
 
     private fun extractDateOnly(dateTimeLabel: String): String {
@@ -398,24 +463,33 @@ object BodyRecompEngine {
     }
 
     /**
-     * Remove um registro pelo ID (preservando sempre pelo menos o Marco Zero).
+     * Remove um registro pelo ID (preservando o Marco Zero apenas para o perfil Esnaider).
      */
-    fun deleteRecord(context: Context, recordId: String): List<BioimpedanceRecord> {
-        val current = loadRecords(context).filterNot { it.id == recordId }
-        val finalRecords = if (current.isEmpty()) createOfficialDefaultTimeline() else current
+    fun deleteRecord(
+        context: Context,
+        recordId: String,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
+    ): List<BioimpedanceRecord> {
+        val current = loadRecords(context, profile).filterNot { it.id == recordId }
+        val finalRecords = if (current.isEmpty() && BioimpedanceReferences.hasPersonalGoals(profile)) {
+            createOfficialDefaultTimeline()
+        } else {
+            current
+        }
         saveRecords(context, finalRecords)
         return finalRecords
     }
 
     /**
      * Cria um rascunho pré-preenchido com os valores da última pesagem para facilitar o
-     * Check-in Rápido Semanal (onde o atleta altera apenas o que mudou ou anexa um print).
+     * Check-in Rápido Semanal (ou um registro em branco do perfil quando não houver histórico).
      */
     fun createWeeklyCheckInDraft(
         latestRecord: BioimpedanceRecord?,
-        nowMillis: Long = System.currentTimeMillis()
+        nowMillis: Long = System.currentTimeMillis(),
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
     ): BioimpedanceRecord {
-        val base = latestRecord ?: createOfficialCheckIn3FitdaysRecord()
+        val base = latestRecord ?: defaultFallbackRecord(profile, nowMillis)
         val sdf = SimpleDateFormat("dd/MM/yyyy - HH:mm", Locale.forLanguageTag("pt-BR"))
         return BioimpedanceRecord(
             id = "recomp_${nowMillis}",
@@ -451,9 +525,10 @@ object BodyRecompEngine {
         rawText: String,
         fallbackBase: BioimpedanceRecord? = null,
         nowMillis: Long = System.currentTimeMillis(),
-        profileHeightCm: Float? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile)?.toFloat()
+        profileHeightCm: Float? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile)?.toFloat(),
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
     ): BioimpedanceRecord {
-        val base = fallbackBase ?: createOfficialCheckIn3FitdaysRecord()
+        val base = fallbackBase ?: defaultFallbackRecord(profile, nowMillis)
         return BioimpedanceImageParser.parseRelaxmedicOrFitdaysStructuredText(
             reconstructedText = rawText,
             fallbackBase = base,
@@ -464,201 +539,283 @@ object BodyRecompEngine {
     }
 
     /**
-     * Avalia os 14 indicadores da bioimpedância de acordo com as faixas clínicas/fisiológicas
-     * do padrão Fitdays / Relaxmedic para homens adultos atletas/recreacionais.
-     * Todos os títulos seguem nomes concisos para exibição 100% completa sem reticências.
+     * Avalia os 14 indicadores da bioimpedância parametrizados pelo perfil ativo:
+     * - IMC: faixas da OMS para todos os perfis.
+     * - Peso: faixa saudável calculada pela altura válida do perfil (`healthyWeightRangeKg`); sem altura válida, sem referência.
+     * - Demais indicadores: referências e status pessoais apenas quando `BioimpedanceReferences.hasPersonalGoals(profile)` é true;
+     *   para demais perfis, exibe apenas o valor com "Sem referência" e `IndicatorStatus.NEUTRO`.
      */
-    fun evaluateIndicators(record: BioimpedanceRecord): List<BioimpedanceIndicatorAssessment> {
+    fun evaluateIndicators(
+        record: BioimpedanceRecord,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
+    ): List<BioimpedanceIndicatorAssessment> {
         val ptBr = Locale.forLanguageTag("pt-BR")
-        // Faixa de peso saudável calculada pela altura de 187 cm (1,87 m) conforme laudo Relaxmedic: 65,4 – 88,5 kg
-        val minHealthyWeightKg = 65.4f
-        val maxHealthyWeightKg = 88.5f
+        val hasPersonalGoals = BioimpedanceReferences.hasPersonalGoals(profile)
+        val profileHeightCm = resolveValidHeightCmOrNull(profile)
+        val healthyWeightRange = BioimpedanceReferences.healthyWeightRangeKg(profileHeightCm)
+
+        val weightRefText = healthyWeightRange?.let { range ->
+            String.format(ptBr, "Ref: %.1f – %.1f kg", range.start, range.endInclusive)
+        } ?: "Sem referência"
+        val weightStatus = when {
+            record.weightKg <= 0f || healthyWeightRange == null -> IndicatorStatus.NEUTRO
+            record.weightKg < healthyWeightRange.start -> IndicatorStatus.BAIXO
+            record.weightKg <= healthyWeightRange.endInclusive -> IndicatorStatus.SAUDAVEL
+            else -> IndicatorStatus.ALTO
+        }
+        val hasRatioData = record.weightKg > 0f && record.muscleMassKg > 0f && record.bodyFatPercent > 0f
+
         return listOf(
             BioimpedanceIndicatorAssessment(
                 indexNumber = 1,
                 titlePt = "Peso",
-                formattedValue = String.format(ptBr, "%.1f kg", record.weightKg),
-                secondaryValue = String.format(ptBr, "Relação M/G: %.2fx", record.leanToFatRatio),
-                referenceTargetText = "Ref: 65,4 – 88,5 kg",
-                status = when {
-                    record.weightKg < minHealthyWeightKg -> IndicatorStatus.BAIXO
-                    record.weightKg <= maxHealthyWeightKg -> IndicatorStatus.SAUDAVEL
-                    else -> IndicatorStatus.ALTO
-                }
+                formattedValue = if (record.weightKg > 0f) String.format(ptBr, "%.1f kg", record.weightKg) else "--",
+                secondaryValue = if (hasRatioData) String.format(ptBr, "Relação M/G: %.2fx", record.leanToFatRatio) else null,
+                referenceTargetText = weightRefText,
+                status = weightStatus
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 2,
                 titlePt = "IMC",
-                formattedValue = String.format(ptBr, "%.1f", record.bmi),
+                formattedValue = if (record.bmi > 0f) String.format(ptBr, "%.1f", record.bmi) else "--",
                 referenceTargetText = "Normal: 18,5 – 24,9",
-                status = when {
-                    record.bmi < 18.5f -> IndicatorStatus.BAIXO
-                    record.bmi <= 24.9f -> IndicatorStatus.MEDIO
-                    record.bmi <= 29.9f -> IndicatorStatus.SOBREPESO
-                    else -> IndicatorStatus.ALTO
-                }
+                status = if (record.bmi > 0f) BioimpedanceReferences.classifyBmi(record.bmi) else IndicatorStatus.NEUTRO
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 3,
                 titlePt = "Gordura Corporal",
-                formattedValue = String.format(ptBr, "%.1f%%", record.bodyFatPercent),
-                secondaryValue = String.format(ptBr, "%.1f kg lipídios", record.fatMassKg),
-                referenceTargetText = "Meta < 18,0%",
-                status = when {
-                    record.bodyFatPercent < 10f -> IndicatorStatus.BAIXO
-                    record.bodyFatPercent <= 18f -> IndicatorStatus.EXCELENTE
-                    record.bodyFatPercent <= 21f -> IndicatorStatus.MEDIO
-                    else -> IndicatorStatus.ALTO
+                formattedValue = if (record.bodyFatPercent > 0f) String.format(ptBr, "%.1f%%", record.bodyFatPercent) else "--",
+                secondaryValue = if (record.bodyFatPercent > 0f && record.weightKg > 0f) {
+                    String.format(ptBr, "%.1f kg lipídios", record.fatMassKg)
+                } else null,
+                referenceTargetText = if (hasPersonalGoals) "Meta < 18,0%" else "Sem referência",
+                status = if (!hasPersonalGoals || record.bodyFatPercent <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    when {
+                        record.bodyFatPercent < 10f -> IndicatorStatus.BAIXO
+                        record.bodyFatPercent <= 18f -> IndicatorStatus.EXCELENTE
+                        record.bodyFatPercent <= 21f -> IndicatorStatus.MEDIO
+                        else -> IndicatorStatus.ALTO
+                    }
                 }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 4,
                 titlePt = "Taxa Muscular",
-                formattedValue = String.format(ptBr, "%.1f%%", record.muscleRatePercent),
-                referenceTargetText = "Ideal > 74,0%",
-                status = when {
-                    record.muscleRatePercent < 65f -> IndicatorStatus.BAIXO
-                    record.muscleRatePercent < 74f -> IndicatorStatus.MEDIO
-                    else -> IndicatorStatus.EXCELENTE
+                formattedValue = if (record.muscleRatePercent > 0f) String.format(ptBr, "%.1f%%", record.muscleRatePercent) else "--",
+                referenceTargetText = if (hasPersonalGoals) "Ideal > 74,0%" else "Sem referência",
+                status = if (!hasPersonalGoals || record.muscleRatePercent <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    when {
+                        record.muscleRatePercent < 65f -> IndicatorStatus.BAIXO
+                        record.muscleRatePercent < 74f -> IndicatorStatus.MEDIO
+                        else -> IndicatorStatus.EXCELENTE
+                    }
                 }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 5,
                 titlePt = "Massa Livre de Gordura",
-                formattedValue = String.format(ptBr, "%.1f kg", record.fatFreeMassKg),
-                referenceTargetText = "Preservar >= 65,0 kg",
-                status = if (record.fatFreeMassKg >= 65f) IndicatorStatus.MEDIO else IndicatorStatus.BAIXO
+                formattedValue = if (record.fatFreeMassKg > 0f) String.format(ptBr, "%.1f kg", record.fatFreeMassKg) else "--",
+                referenceTargetText = if (hasPersonalGoals) "Preservar >= 65,0 kg" else "Sem referência",
+                status = if (!hasPersonalGoals || record.fatFreeMassKg <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    if (record.fatFreeMassKg >= 65f) IndicatorStatus.MEDIO else IndicatorStatus.BAIXO
+                }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 6,
                 titlePt = "Gordura Subcutânea",
-                formattedValue = String.format(ptBr, "%.1f%%", record.subcutaneousFatPercent),
-                referenceTargetText = "Ideal: 8,6 – 16,7%",
-                status = when {
-                    record.subcutaneousFatPercent < 8.6f -> IndicatorStatus.BAIXO
-                    record.subcutaneousFatPercent <= 16.7f -> IndicatorStatus.MEDIO
-                    else -> IndicatorStatus.ALTO
+                formattedValue = if (record.subcutaneousFatPercent > 0f) String.format(ptBr, "%.1f%%", record.subcutaneousFatPercent) else "--",
+                referenceTargetText = if (hasPersonalGoals) "Ideal: 8,6 – 16,7%" else "Sem referência",
+                status = if (!hasPersonalGoals || record.subcutaneousFatPercent <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    when {
+                        record.subcutaneousFatPercent < 8.6f -> IndicatorStatus.BAIXO
+                        record.subcutaneousFatPercent <= 16.7f -> IndicatorStatus.MEDIO
+                        else -> IndicatorStatus.ALTO
+                    }
                 }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 7,
                 titlePt = "Gordura Visceral",
-                formattedValue = String.format(ptBr, "%.0f", record.visceralFatIndex),
-                referenceTargetText = "Saudável <= 9",
-                status = when {
-                    record.visceralFatIndex <= 9f -> IndicatorStatus.MEDIO
-                    record.visceralFatIndex <= 14f -> IndicatorStatus.MEDIO_RISCO
-                    else -> IndicatorStatus.ALTO
+                formattedValue = if (record.visceralFatIndex > 0f) String.format(ptBr, "%.0f", record.visceralFatIndex) else "--",
+                referenceTargetText = if (hasPersonalGoals) "Saudável <= 9" else "Sem referência",
+                status = if (!hasPersonalGoals || record.visceralFatIndex <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    when {
+                        record.visceralFatIndex <= 9f -> IndicatorStatus.MEDIO
+                        record.visceralFatIndex <= 14f -> IndicatorStatus.MEDIO_RISCO
+                        else -> IndicatorStatus.ALTO
+                    }
                 }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 8,
                 titlePt = "Água Corporal",
-                formattedValue = String.format(ptBr, "%.1f%%", record.bodyWaterPercent),
-                secondaryValue = String.format(
-                    ptBr,
-                    "%.1f kg hídricos",
-                    BioimpedanceImageParser.convertPercentMetricToKg(record.bodyWaterPercent, record.weightKg)
-                ),
-                referenceTargetText = "Meta >= 55,0%",
-                status = when {
-                    record.bodyWaterPercent < 55.0f -> IndicatorStatus.DESIDRATADO
-                    record.bodyWaterPercent <= 65.0f -> IndicatorStatus.MEDIO
-                    else -> IndicatorStatus.EXCELENTE
+                formattedValue = if (record.bodyWaterPercent > 0f) String.format(ptBr, "%.1f%%", record.bodyWaterPercent) else "--",
+                secondaryValue = if (record.bodyWaterPercent > 0f && record.weightKg > 0f) {
+                    String.format(
+                        ptBr,
+                        "%.1f kg hídricos",
+                        BioimpedanceImageParser.convertPercentMetricToKg(record.bodyWaterPercent, record.weightKg)
+                    )
+                } else null,
+                referenceTargetText = if (hasPersonalGoals) "Meta >= 55,0%" else "Sem referência",
+                status = if (!hasPersonalGoals || record.bodyWaterPercent <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    when {
+                        record.bodyWaterPercent < 55.0f -> IndicatorStatus.DESIDRATADO
+                        record.bodyWaterPercent <= 65.0f -> IndicatorStatus.MEDIO
+                        else -> IndicatorStatus.EXCELENTE
+                    }
                 }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 9,
                 titlePt = "Músculo Esquelético",
-                formattedValue = String.format(ptBr, "%.1f%%", record.skeletalMusclePercent),
-                secondaryValue = String.format(ptBr, "%.1f kg contrátil", record.skeletalMuscleKg),
-                referenceTargetText = "Meta >= 45,0%",
-                status = when {
-                    record.skeletalMusclePercent < 40.0f -> IndicatorStatus.BAIXO
-                    record.skeletalMusclePercent < 45.0f -> IndicatorStatus.MEDIO
-                    else -> IndicatorStatus.EXCELENTE
+                formattedValue = if (record.skeletalMusclePercent > 0f) String.format(ptBr, "%.1f%%", record.skeletalMusclePercent) else "--",
+                secondaryValue = if (record.skeletalMusclePercent > 0f && record.weightKg > 0f) {
+                    String.format(ptBr, "%.1f kg contrátil", record.skeletalMuscleKg)
+                } else null,
+                referenceTargetText = if (hasPersonalGoals) "Meta >= 45,0%" else "Sem referência",
+                status = if (!hasPersonalGoals || record.skeletalMusclePercent <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    when {
+                        record.skeletalMusclePercent < 40.0f -> IndicatorStatus.BAIXO
+                        record.skeletalMusclePercent < 45.0f -> IndicatorStatus.MEDIO
+                        else -> IndicatorStatus.EXCELENTE
+                    }
                 }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 10,
                 titlePt = "Massa Muscular",
-                formattedValue = String.format(ptBr, "%.1f kg", record.muscleMassKg),
-                referenceTargetText = "Ref > 60,0 kg",
-                status = when {
-                    record.muscleMassKg < 58.0f -> IndicatorStatus.BAIXO
-                    record.muscleMassKg <= 66.0f -> IndicatorStatus.MEDIO
-                    else -> IndicatorStatus.EXCELENTE
+                formattedValue = if (record.muscleMassKg > 0f) String.format(ptBr, "%.1f kg", record.muscleMassKg) else "--",
+                referenceTargetText = if (hasPersonalGoals) "Ref > 60,0 kg" else "Sem referência",
+                status = if (!hasPersonalGoals || record.muscleMassKg <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    when {
+                        record.muscleMassKg < 58.0f -> IndicatorStatus.BAIXO
+                        record.muscleMassKg <= 66.0f -> IndicatorStatus.MEDIO
+                        else -> IndicatorStatus.EXCELENTE
+                    }
                 }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 11,
                 titlePt = "Massa Óssea",
-                formattedValue = String.format(ptBr, "%.1f kg", record.boneMassKg),
-                referenceTargetText = "Normal: 3,1 – 3,7 kg",
-                status = when {
-                    record.boneMassKg < 2.9f -> IndicatorStatus.BAIXO
-                    record.boneMassKg <= 3.9f -> IndicatorStatus.MEDIO
-                    else -> IndicatorStatus.EXCELENTE
+                formattedValue = if (record.boneMassKg > 0f) String.format(ptBr, "%.1f kg", record.boneMassKg) else "--",
+                referenceTargetText = if (hasPersonalGoals) "Normal: 3,1 – 3,7 kg" else "Sem referência",
+                status = if (!hasPersonalGoals || record.boneMassKg <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    when {
+                        record.boneMassKg < 2.9f -> IndicatorStatus.BAIXO
+                        record.boneMassKg <= 3.9f -> IndicatorStatus.MEDIO
+                        else -> IndicatorStatus.EXCELENTE
+                    }
                 }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 12,
                 titlePt = "Proteína",
-                formattedValue = String.format(ptBr, "%.1f%%", record.proteinPercent),
-                secondaryValue = String.format(
-                    ptBr,
-                    "%.1f kg proteicos",
-                    BioimpedanceImageParser.convertPercentMetricToKg(record.proteinPercent, record.weightKg)
-                ),
-                referenceTargetText = "Ideal >= 16,0%",
-                status = when {
-                    record.proteinPercent < 16.0f -> IndicatorStatus.BAIXO
-                    record.proteinPercent <= 20.0f -> IndicatorStatus.MEDIO
-                    else -> IndicatorStatus.EXCELENTE
+                formattedValue = if (record.proteinPercent > 0f) String.format(ptBr, "%.1f%%", record.proteinPercent) else "--",
+                secondaryValue = if (record.proteinPercent > 0f && record.weightKg > 0f) {
+                    String.format(
+                        ptBr,
+                        "%.1f kg proteicos",
+                        BioimpedanceImageParser.convertPercentMetricToKg(record.proteinPercent, record.weightKg)
+                    )
+                } else null,
+                referenceTargetText = if (hasPersonalGoals) "Ideal >= 16,0%" else "Sem referência",
+                status = if (!hasPersonalGoals || record.proteinPercent <= 0f) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    when {
+                        record.proteinPercent < 16.0f -> IndicatorStatus.BAIXO
+                        record.proteinPercent <= 20.0f -> IndicatorStatus.MEDIO
+                        else -> IndicatorStatus.EXCELENTE
+                    }
                 }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 13,
                 titlePt = "TMB (Basal)",
-                formattedValue = "${record.bmrKcal} kcal",
-                referenceTargetText = "Faixa: 1750+ kcal",
-                status = if (record.bmrKcal >= 1750) IndicatorStatus.MEDIO else IndicatorStatus.BAIXO
+                formattedValue = if (record.bmrKcal > 0) "${record.bmrKcal} kcal" else "--",
+                referenceTargetText = if (hasPersonalGoals) "Faixa: 1750+ kcal" else "Sem referência",
+                status = if (!hasPersonalGoals || record.bmrKcal <= 0) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    if (record.bmrKcal >= 1750) IndicatorStatus.MEDIO else IndicatorStatus.BAIXO
+                }
             ),
             BioimpedanceIndicatorAssessment(
                 indexNumber = 14,
                 titlePt = "Idade Metabólica",
-                formattedValue = "${record.metabolicAge} anos",
-                referenceTargetText = "Menor que 50 anos",
-                status = if (record.metabolicAge < 50) IndicatorStatus.EXCELENTE else IndicatorStatus.ALTO
+                formattedValue = if (record.metabolicAge > 0) "${record.metabolicAge} anos" else "--",
+                referenceTargetText = if (hasPersonalGoals) "Menor que 50 anos" else "Sem referência",
+                status = if (!hasPersonalGoals || record.metabolicAge <= 0) {
+                    IndicatorStatus.NEUTRO
+                } else {
+                    if (record.metabolicAge < 50) IndicatorStatus.EXCELENTE else IndicatorStatus.ALTO
+                }
             )
         )
     }
 
     /**
-     * Constrói as 4 barras de metas fisiológicas estratégicas para o atleta:
-     * 1. Gordura Corporal: atual (23,0%) -> meta < 18,0%
-     * 2. Gordura Visceral: atual (11) -> meta <= 9
-     * 3. Músculo Esquelético: atual (40,9%) -> meta >= 45,0%
-     * 4. Água Corporal: atual (52,8%) -> meta >= 55,0%
+     * Constrói as 4 barras de metas fisiológicas estratégicas apenas para perfis com metas pessoais.
+     * Para perfis sem metas pessoais, retorna lista vazia (sem calcular barras).
+     * O progresso usa o Marco Zero real (`baseline`) quando disponível, ou razão direta em relação à meta
+     * (sem pontos de partida fixos).
      */
-    fun buildPhysiologicalGoalBars(current: BioimpedanceRecord): List<PhysiologicalGoalProgress> {
+    fun buildPhysiologicalGoalBars(
+        current: BioimpedanceRecord,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile,
+        baseline: BioimpedanceRecord? = null
+    ): List<PhysiologicalGoalProgress> {
+        if (!BioimpedanceReferences.hasPersonalGoals(profile)) return emptyList()
         val ptBr = Locale.forLanguageTag("pt-BR")
 
-        // 1. Gordura Corporal (menor é melhor: 30% = 0f, 18% = 1f)
-        val bfProgress = ((30f - current.bodyFatPercent) / (30f - TARGET_BODY_FAT_PERCENT)).coerceIn(0.08f, 1f)
+        fun progressLowerBetter(value: Float, target: Float, start: Float?): Float {
+            if (value <= 0f) return 0.08f
+            if (value <= target) return 1f
+            if (start != null && start > target && start > value) {
+                return ((start - value) / (start - target)).coerceIn(0.08f, 1f)
+            }
+            return (target / value).coerceIn(0.08f, 1f)
+        }
+
+        fun progressHigherBetter(value: Float, target: Float, start: Float?): Float {
+            if (value <= 0f || target <= 0f) return 0.08f
+            if (value >= target) return 1f
+            if (start != null && start in 0.1f..<target && value > start) {
+                return ((value - start) / (target - start)).coerceIn(0.08f, 1f)
+            }
+            return (value / target).coerceIn(0.08f, 1f)
+        }
+
+        val bfProgress = progressLowerBetter(current.bodyFatPercent, TARGET_BODY_FAT_PERCENT, baseline?.bodyFatPercent)
         val bfDiff = (current.bodyFatPercent - TARGET_BODY_FAT_PERCENT).coerceAtLeast(0f)
         val bfKgToLose = round1((bfDiff / 100f) * current.weightKg)
 
-        // 2. Gordura Visceral (menor é melhor: 16 = 0f, 9 = 1f)
-        val viscProgress = ((16f - current.visceralFatIndex) / (16f - TARGET_VISCERAL_FAT_INDEX)).coerceIn(0.08f, 1f)
+        val viscProgress = progressLowerBetter(current.visceralFatIndex, TARGET_VISCERAL_FAT_INDEX, baseline?.visceralFatIndex)
         val viscDiff = (current.visceralFatIndex - TARGET_VISCERAL_FAT_INDEX).coerceAtLeast(0f)
 
-        // 3. Músculo Esquelético (maior é melhor: 35% = 0f, 45% = 1f)
-        val smProgress = ((current.skeletalMusclePercent - 35f) / (TARGET_SKELETAL_MUSCLE_PERCENT - 35f)).coerceIn(0.08f, 1f)
+        val smProgress = progressHigherBetter(current.skeletalMusclePercent, TARGET_SKELETAL_MUSCLE_PERCENT, baseline?.skeletalMusclePercent)
         val smDiff = (TARGET_SKELETAL_MUSCLE_PERCENT - current.skeletalMusclePercent).coerceAtLeast(0f)
 
-        // 4. Água Corporal (maior é melhor: 45% = 0f, 55% = 1f)
-        val waterProgress = ((current.bodyWaterPercent - 45f) / (TARGET_BODY_WATER_PERCENT - 45f)).coerceIn(0.08f, 1f)
+        val waterProgress = progressHigherBetter(current.bodyWaterPercent, TARGET_BODY_WATER_PERCENT, baseline?.bodyWaterPercent)
         val waterDiff = (TARGET_BODY_WATER_PERCENT - current.bodyWaterPercent).coerceAtLeast(0f)
 
         return listOf(
@@ -737,9 +894,16 @@ object BodyRecompEngine {
      * Gera a lista de Cards de Degrau de Evolução (`RecompStepCardSummary`) em ordem reversa
      * (mais recente no topo, até o Marco Zero #1 na base) para exibição na Linha do Tempo.
      */
-    fun buildRecompTimelineCards(records: List<BioimpedanceRecord>): List<RecompStepCardSummary> {
+    fun buildRecompTimelineCards(
+        records: List<BioimpedanceRecord>,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
+    ): List<RecompStepCardSummary> {
         val sorted = if (records.isEmpty()) {
-            createOfficialDefaultTimeline()
+            if (BioimpedanceReferences.hasPersonalGoals(profile)) {
+                createOfficialDefaultTimeline()
+            } else {
+                return emptyList()
+            }
         } else {
             records.sortedBy { it.timestampMillis }
         }
@@ -1112,7 +1276,11 @@ object BodyRecompEngine {
      * Quando a água corporal está abaixo de 55% (ex: 52,8%), a menor hidratação intracelular
      * reduz a condutividade da corrente elétrica nos tecidos magros.
      */
-    fun buildHydrationConductivityWarning(record: BioimpedanceRecord): String? {
+    fun buildHydrationConductivityWarning(
+        record: BioimpedanceRecord,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
+    ): String? {
+        if (!BioimpedanceReferences.hasPersonalGoals(profile) || record.bodyWaterPercent <= 0f) return null
         if (record.bodyWaterPercent >= TARGET_BODY_WATER_PERCENT) return null
         val ptBr = Locale.forLanguageTag("pt-BR")
         val deficit = TARGET_BODY_WATER_PERCENT - record.bodyWaterPercent
@@ -1226,8 +1394,11 @@ object BodyRecompEngine {
         }
     }
 
-    private fun fromJson(obj: JSONObject): BioimpedanceRecord {
-        val fallback = createOfficialCheckIn3FitdaysRecord()
+    private fun fromJson(
+        obj: JSONObject,
+        profile: UserProfileData? = WeightCalculator.activeUserProfile
+    ): BioimpedanceRecord {
+        val fallback = defaultFallbackRecord(profile)
         val explicitFat = if (obj.has("explicitFatMassKg")) {
             obj.optDouble("explicitFatMassKg", 0.0).toFloat().takeIf { it > 0.5f }
         } else {

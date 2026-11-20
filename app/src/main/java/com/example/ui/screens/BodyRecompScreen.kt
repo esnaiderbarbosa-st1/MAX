@@ -44,6 +44,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.BioimpedanceIndicatorAssessment
 import com.example.data.model.BioimpedanceRecord
+import com.example.data.model.IndicatorStatus
 import com.example.data.model.PhysiologicalGoalProgress
 import com.example.data.model.RecompClassification
 import com.example.data.model.RecompDeltaItem
@@ -53,6 +54,7 @@ import com.example.data.model.calculateAutoBmiOrNull
 import com.example.data.model.resolveValidHeightCmOrNull
 import com.example.domain.recomp.BioimpedanceDetectedTemplate
 import com.example.domain.recomp.BioimpedanceImageParser
+import com.example.domain.recomp.BioimpedanceReferences
 import com.example.domain.recomp.BodyRecompEngine
 import com.example.utils.AudioSynth
 import com.example.utils.BioimpedancePdfExporter
@@ -87,18 +89,21 @@ fun BodyRecompProfileEntryCard(
 ) {
     val context = LocalContext.current
     val ptBr = remember { Locale.forLanguageTag("pt-BR") }
-    var records by remember { mutableStateOf(BodyRecompEngine.loadRecords(context)) }
+    val activeProfile = userProfile ?: WeightCalculator.activeUserProfile
+    var records by remember(activeProfile?.nome) { mutableStateOf(BodyRecompEngine.loadRecords(context, activeProfile)) }
     var showFullDossierModal by remember { mutableStateOf(false) }
 
     // buildRecompTimelineCards retorna em ordem reversa (mais recente no índice 0, Marco Zero no final)
-    val timelineCards = remember(records) { BodyRecompEngine.buildRecompTimelineCards(records) }
+    val timelineCards = remember(records, activeProfile) { BodyRecompEngine.buildRecompTimelineCards(records, activeProfile) }
     val latestSummary = timelineCards.firstOrNull()
-    val latestRecord = latestSummary?.current ?: BodyRecompEngine.createOfficialCheckIn3FitdaysRecord()
+    val latestRecord = latestSummary?.current ?: BodyRecompEngine.defaultFallbackRecord(activeProfile)
     val latestClassification = latestSummary?.recompClassification ?: RecompClassification.OURO_RECOMPOSICAO_PURA
 
-    // Sincroniza automaticamente o peso atual (84,7 kg) com o perfil global da aplicação
-    LaunchedEffect(latestRecord.weightKg) {
-        onWeightSyncedToProfile?.invoke(latestRecord.weightKg)
+    // Sincroniza automaticamente o peso atual com o perfil global apenas quando houver medição salva válida
+    LaunchedEffect(records.size, latestRecord.weightKg) {
+        if (records.isNotEmpty() && latestRecord.weightKg > 0f) {
+            onWeightSyncedToProfile?.invoke(latestRecord.weightKg)
+        }
     }
 
     Card(
@@ -186,13 +191,21 @@ fun BodyRecompProfileEntryCard(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = String.format(
-                                ptBr,
-                                "%.1f kg • %.1f%% BF • %.1f kg Músculo",
-                                latestRecord.weightKg,
-                                latestRecord.bodyFatPercent,
-                                latestRecord.muscleMassKg
-                            ),
+                            text = if (records.isEmpty()) {
+                                if (latestRecord.weightKg > 0f) {
+                                    String.format(ptBr, "%.1f kg • Sem bioimpedância registrada", latestRecord.weightKg)
+                                } else {
+                                    "Sem bioimpedância registrada"
+                                }
+                            } else {
+                                String.format(
+                                    ptBr,
+                                    "%.1f kg • %.1f%% BF • %.1f kg Músculo",
+                                    latestRecord.weightKg,
+                                    latestRecord.bodyFatPercent,
+                                    latestRecord.muscleMassKg
+                                )
+                            },
                             color = RecompPrimaryText,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
@@ -219,7 +232,7 @@ fun BodyRecompProfileEntryCard(
                                 modifier = Modifier.size(13.dp)
                             )
                             Text(
-                                text = "Última: ${latestRecord.dateTimeLabel}",
+                                text = if (records.isEmpty()) "Última: --" else "Última: ${latestRecord.dateTimeLabel}",
                                 color = RecompSecondaryText,
                                 fontSize = 11.sp,
                                 maxLines = 1,
@@ -229,11 +242,15 @@ fun BodyRecompProfileEntryCard(
                         }
 
                         Text(
-                            text = String.format(
-                                ptBr,
-                                "Massa Gorda: %.1f kg",
-                                latestRecord.fatMassKg
-                            ),
+                            text = if (records.isEmpty() || latestRecord.bodyFatPercent <= 0f) {
+                                "Massa Gorda: --"
+                            } else {
+                                String.format(
+                                    ptBr,
+                                    "Massa Gorda: %.1f kg",
+                                    latestRecord.fatMassKg
+                                )
+                            },
                             color = RecompBlue,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -247,7 +264,7 @@ fun BodyRecompProfileEntryCard(
             Button(
                 onClick = {
                     AudioSynth.playTickSound()
-                    records = BodyRecompEngine.loadRecords(context)
+                    records = BodyRecompEngine.loadRecords(context, activeProfile)
                     showFullDossierModal = true
                 },
                 colors = ButtonDefaults.buttonColors(
@@ -281,7 +298,7 @@ fun BodyRecompProfileEntryCard(
     if (showFullDossierModal) {
         Dialog(
             onDismissRequest = {
-                records = BodyRecompEngine.loadRecords(context)
+                records = BodyRecompEngine.loadRecords(context, activeProfile)
                 showFullDossierModal = false
             },
             properties = DialogProperties(
@@ -292,7 +309,7 @@ fun BodyRecompProfileEntryCard(
             BodyRecompScreen(
                 userProfile = userProfile,
                 onBack = {
-                    records = BodyRecompEngine.loadRecords(context)
+                    records = BodyRecompEngine.loadRecords(context, activeProfile)
                     showFullDossierModal = false
                 },
                 onRecordsUpdated = { updatedList ->
@@ -327,11 +344,12 @@ fun BodyRecompScreen(
     BackHandler(onBack = onBack)
 
     val context = LocalContext.current
-    val activeProfileHeightCm = resolveValidHeightCmOrNull(userProfile ?: WeightCalculator.activeUserProfile)
-    var records by remember { mutableStateOf(BodyRecompEngine.loadRecords(context)) }
+    val activeProfile = userProfile ?: WeightCalculator.activeUserProfile
+    val activeProfileHeightCm = resolveValidHeightCmOrNull(activeProfile)
+    var records by remember(activeProfile?.nome) { mutableStateOf(BodyRecompEngine.loadRecords(context, activeProfile)) }
     // timelineCards está ordenado do mais recente (índice 0) até o Marco Zero #1 (último índice)
-    val timelineCards = remember(records) {
-        BodyRecompEngine.buildRecompTimelineCards(records)
+    val timelineCards = remember(records, activeProfile) {
+        BodyRecompEngine.buildRecompTimelineCards(records, activeProfile)
     }
     var selectedCardIndex by remember(timelineCards.size) { mutableIntStateOf(0) }
     var compareWithMarcoZero by remember { mutableStateOf(false) }
@@ -341,16 +359,21 @@ fun BodyRecompScreen(
     val activeTimelineCard = timelineCards.getOrNull(selectedCardIndex)
         ?: timelineCards.firstOrNull()
     val activeRecord = activeTimelineCard?.current
-        ?: BodyRecompEngine.createOfficialCheckIn3FitdaysRecord()
+        ?: BodyRecompEngine.defaultFallbackRecord(activeProfile)
+    val baselineRecord = timelineCards.lastOrNull()?.current
 
-    val goalBars = remember(activeRecord) {
-        BodyRecompEngine.buildPhysiologicalGoalBars(activeRecord)
+    val goalBars = remember(activeRecord, activeProfile, baselineRecord) {
+        BodyRecompEngine.buildPhysiologicalGoalBars(
+            current = activeRecord,
+            profile = activeProfile,
+            baseline = baselineRecord
+        )
     }
-    val evaluations = remember(activeRecord) {
-        BodyRecompEngine.evaluateIndicators(activeRecord)
+    val evaluations = remember(activeRecord, activeProfile) {
+        BodyRecompEngine.evaluateIndicators(activeRecord, activeProfile)
     }
-    val hydrationWarning = remember(activeRecord) {
-        BodyRecompEngine.buildHydrationConductivityWarning(activeRecord)
+    val hydrationWarning = remember(activeRecord, activeProfile) {
+        BodyRecompEngine.buildHydrationConductivityWarning(activeRecord, activeProfile)
     }
 
     val currentDensity = LocalDensity.current
@@ -486,7 +509,10 @@ fun BodyRecompScreen(
             // B. TRIPLO DESTAQUE SUPERIOR + MÉTRICAS DERIVADAS ("Massa Gorda", "Músculo Esq.", "Relação M/G")
             // =========================================================================
             item {
-                TripleHighlightAndDerivedCard(record = activeRecord)
+                TripleHighlightAndDerivedCard(
+                    record = activeRecord,
+                    userProfile = activeProfile
+                )
             }
 
             // =========================================================================
@@ -509,7 +535,7 @@ fun BodyRecompScreen(
                     },
                     onDeleteCurrentRecord = { recordId ->
                         AudioSynth.playTickSound()
-                        val updated = BodyRecompEngine.deleteRecord(context, recordId)
+                        val updated = BodyRecompEngine.deleteRecord(context, recordId, activeProfile)
                         records = updated
                         selectedCardIndex = 0
                         onRecordsUpdated?.invoke(updated)
@@ -570,11 +596,12 @@ fun BodyRecompScreen(
     // =========================================================================
     if (showCheckInModal) {
         val newestRecord = timelineCards.firstOrNull()?.current
-            ?: BodyRecompEngine.createOfficialCheckIn3FitdaysRecord()
+            ?: BodyRecompEngine.defaultFallbackRecord(activeProfile)
         WeeklyBioimpedanceCheckInDialog(
             latestRecord = newestRecord,
             existingRecords = records,
             editingRecord = editingRecord,
+            userProfile = activeProfile,
             profileHeightCm = activeProfileHeightCm,
             onDismiss = {
                 editingRecord = null
@@ -584,7 +611,7 @@ fun BodyRecompScreen(
                 val wasEditing = editingRecord != null
                 val updated = BodyRecompEngine.upsertRecord(context, savedRecord)
                 records = updated
-                val newCards = BodyRecompEngine.buildRecompTimelineCards(updated)
+                val newCards = BodyRecompEngine.buildRecompTimelineCards(updated, activeProfile)
                 val targetIdx = newCards.indexOfFirst { it.current.id == savedRecord.id }
                 selectedCardIndex = if (targetIdx >= 0) targetIdx else 0
                 editingRecord = null
@@ -822,8 +849,37 @@ private fun MasterRecompHeaderCard(
 }
 
 @Composable
-private fun TripleHighlightAndDerivedCard(record: BioimpedanceRecord) {
+private fun TripleHighlightAndDerivedCard(
+    record: BioimpedanceRecord,
+    userProfile: UserProfileData? = WeightCalculator.activeUserProfile
+) {
     val ptBr = remember { Locale.forLanguageTag("pt-BR") }
+    val hasPersonalGoals = BioimpedanceReferences.hasPersonalGoals(userProfile)
+    val healthyWeightRange = BioimpedanceReferences.healthyWeightRangeKg(resolveValidHeightCmOrNull(userProfile))
+    val weightBadgeText = when {
+        record.weightKg <= 0f || healthyWeightRange == null -> "—"
+        record.weightKg < healthyWeightRange.start -> "Baixo"
+        record.weightKg <= healthyWeightRange.endInclusive -> "Saudável"
+        else -> "Alto"
+    }
+    val weightBadgeColor = when {
+        record.weightKg <= 0f || healthyWeightRange == null -> RecompSecondaryText
+        record.weightKg in healthyWeightRange -> RecompGreen
+        else -> RecompAmber
+    }
+    val bmiStatus = if (record.bmi > 0f) BioimpedanceReferences.classifyBmi(record.bmi) else IndicatorStatus.NEUTRO
+    val bmiBadgeText = if (record.bmi > 0f) BioimpedanceReferences.bmiBandLabel(record.bmi) else "—"
+    val bfBadgeText = when {
+        !hasPersonalGoals || record.bodyFatPercent <= 0f -> "—"
+        record.bodyFatPercent >= 21f -> "Alto"
+        else -> "Médio"
+    }
+    val bfColor = when {
+        !hasPersonalGoals || record.bodyFatPercent <= 0f -> RecompSecondaryText
+        record.bodyFatPercent >= 21f -> RecompRed
+        else -> RecompGreen
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -869,13 +925,9 @@ private fun TripleHighlightAndDerivedCard(record: BioimpedanceRecord) {
                 ) {
                     TopMetricColumn(
                         label = "PESO CORPORAL",
-                        value = String.format(ptBr, "%.1f kg", record.weightKg),
-                        badgeText = when {
-                            record.weightKg < 65.4f -> "Baixo"
-                            record.weightKg <= 88.5f -> "Saudável"
-                            else -> "Alto"
-                        },
-                        badgeColor = if (record.weightKg in 65.4f..88.5f) RecompGreen else RecompAmber,
+                        value = if (record.weightKg > 0f) String.format(ptBr, "%.1f kg", record.weightKg) else "--",
+                        badgeText = weightBadgeText,
+                        badgeColor = weightBadgeColor,
                         valueColor = RecompPrimaryText
                     )
 
@@ -883,9 +935,9 @@ private fun TripleHighlightAndDerivedCard(record: BioimpedanceRecord) {
 
                     TopMetricColumn(
                         label = "IMC ATUAL",
-                        value = String.format(ptBr, "%.1f", record.bmi),
-                        badgeText = if (record.bmi >= 25f) "Sobrepeso" else "Normal",
-                        badgeColor = if (record.bmi >= 25f) RecompAmber else RecompGreen,
+                        value = if (record.bmi > 0f) String.format(ptBr, "%.1f", record.bmi) else "--",
+                        badgeText = bmiBadgeText,
+                        badgeColor = Color(bmiStatus.badgeColorHex),
                         valueColor = RecompCyan
                     )
 
@@ -893,37 +945,40 @@ private fun TripleHighlightAndDerivedCard(record: BioimpedanceRecord) {
 
                     TopMetricColumn(
                         label = "GORDURA (BF%)",
-                        value = String.format(ptBr, "%.1f%%", record.bodyFatPercent),
-                        badgeText = if (record.bodyFatPercent >= 21f) "Alto" else "Médio",
-                        badgeColor = if (record.bodyFatPercent >= 21f) RecompRed else RecompGreen,
-                        valueColor = if (record.bodyFatPercent >= 21f) RecompRed else RecompGreen
+                        value = if (record.bodyFatPercent > 0f) String.format(ptBr, "%.1f%%", record.bodyFatPercent) else "--",
+                        badgeText = bfBadgeText,
+                        badgeColor = bfColor,
+                        valueColor = if (record.bodyFatPercent > 0f) bfColor else RecompPrimaryText
                     )
                 }
             }
 
             // Segunda Linha: Sub-cards com títulos curtos sem reticências ("Massa Gorda", "Músculo Esq.", "Relação M/G")
+            val hasFat = record.bodyFatPercent > 0f && record.weightKg > 0f
+            val hasSkeletal = record.skeletalMusclePercent > 0f && record.weightKg > 0f
+            val hasRatio = hasFat && record.muscleMassKg > 0f
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 DerivedMetricMiniBox(
                     title = "Massa Gorda",
-                    value = String.format(ptBr, "%.1f kg", record.fatMassKg),
-                    subtitle = String.format(ptBr, "%.1f kg lipídios", record.fatMassKg),
+                    value = if (hasFat) String.format(ptBr, "%.1f kg", record.fatMassKg) else "--",
+                    subtitle = if (hasFat) String.format(ptBr, "%.1f kg lipídios", record.fatMassKg) else "Sem medição",
                     accentColor = RecompBlue,
                     modifier = Modifier.weight(1f)
                 )
                 DerivedMetricMiniBox(
                     title = "Músculo Esq.",
-                    value = String.format(ptBr, "%.1f kg", record.skeletalMuscleKg),
-                    subtitle = String.format(ptBr, "%.1f%% contrátil", record.skeletalMusclePercent),
+                    value = if (hasSkeletal) String.format(ptBr, "%.1f kg", record.skeletalMuscleKg) else "--",
+                    subtitle = if (hasSkeletal) String.format(ptBr, "%.1f%% contrátil", record.skeletalMusclePercent) else "Sem medição",
                     accentColor = RecompGreen,
                     modifier = Modifier.weight(1f)
                 )
                 DerivedMetricMiniBox(
                     title = "Relação M/G",
-                    value = String.format(ptBr, "%.2fx", record.leanToFatRatio),
-                    subtitle = "Meta >= 3.20x",
+                    value = if (hasRatio) String.format(ptBr, "%.2fx", record.leanToFatRatio) else "--",
+                    subtitle = if (hasPersonalGoals) "Meta >= 3.20x" else "Sem referência",
                     accentColor = RecompCyan,
                     modifier = Modifier.weight(1f)
                 )
@@ -1632,7 +1687,23 @@ private fun PhysiologicalGoalsCard(goals: List<PhysiologicalGoalProgress>) {
                 }
             }
 
-            goals.forEach { goal ->
+            if (goals.isEmpty()) {
+                Surface(
+                    color = RecompBgDark,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, RecompCardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Metas ainda não definidas",
+                        color = RecompSecondaryText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp)
+                    )
+                }
+            } else {
+                goals.forEach { goal ->
                 val barColor = Color(goal.status.badgeColorHex)
                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     // Linha 1: Nome da métrica à esquerda em Bold e Status/Falta à direita
@@ -1700,6 +1771,7 @@ private fun PhysiologicalGoalsCard(goals: List<PhysiologicalGoalProgress>) {
                         )
                     }
                 }
+            }
             }
         }
     }
@@ -1857,11 +1929,23 @@ private fun OfficialFitdays14TableCard(
                             modifier = Modifier.width(96.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            RecompStatusPill(
-                                text = normalizedStatusLabel,
-                                color = pillColor,
-                                fixedWidthDp = 96
-                            )
+                            if (item.status == IndicatorStatus.NEUTRO) {
+                                Text(
+                                    text = normalizedStatusLabel,
+                                    color = RecompSecondaryText,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            } else {
+                                RecompStatusPill(
+                                    text = normalizedStatusLabel,
+                                    color = pillColor,
+                                    fixedWidthDp = 96
+                                )
+                            }
                         }
                     }
 
@@ -1885,13 +1969,14 @@ private fun WeeklyBioimpedanceCheckInDialog(
     latestRecord: BioimpedanceRecord,
     existingRecords: List<BioimpedanceRecord>,
     editingRecord: BioimpedanceRecord? = null,
-    profileHeightCm: Int? = resolveValidHeightCmOrNull(WeightCalculator.activeUserProfile),
+    userProfile: UserProfileData? = WeightCalculator.activeUserProfile,
+    profileHeightCm: Int? = resolveValidHeightCmOrNull(userProfile),
     onDismiss: () -> Unit,
     onSaveRecord: (BioimpedanceRecord) -> Unit
 ) {
     val context = LocalContext.current
-    val initialDraft = remember(latestRecord, editingRecord) {
-        editingRecord ?: BodyRecompEngine.createWeeklyCheckInDraft(latestRecord)
+    val initialDraft = remember(latestRecord, editingRecord, userProfile) {
+        editingRecord ?: BodyRecompEngine.createWeeklyCheckInDraft(latestRecord, profile = userProfile)
     }
 
     var selectedTemplate by remember {
@@ -1908,23 +1993,27 @@ private fun WeeklyBioimpedanceCheckInDialog(
     var parserHeadline by remember { mutableStateOf<String?>(null) }
     var parserConversionNote by remember { mutableStateOf<String?>(null) }
 
+    fun fmtOptFloat(v: Float, decimals: Int = 1): String =
+        if (v > 0f) String.format(Locale.US, "%.${decimals}f", v) else ""
+    fun fmtOptInt(v: Int): String = if (v > 0) v.toString() else ""
+
     var dateTimeLabel by remember { mutableStateOf(initialDraft.dateTimeLabel) }
     var sourceAppText by remember { mutableStateOf(initialDraft.sourceApp) }
     var segmentalSummaryText by remember { mutableStateOf(initialDraft.segmentalSummary) }
-    var weightText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.weightKg)) }
-    var bmiText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.bmi)) }
-    var bfText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.bodyFatPercent)) }
-    var muscleRateText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.muscleRatePercent)) }
-    var ffmText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.fatFreeMassKg)) }
-    var subFatText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.subcutaneousFatPercent)) }
-    var visceralText by remember { mutableStateOf(String.format(Locale.US, "%.0f", initialDraft.visceralFatIndex)) }
-    var waterText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.bodyWaterPercent)) }
-    var skeletalPctText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.skeletalMusclePercent)) }
-    var muscleMassKgText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.muscleMassKg)) }
-    var boneMassText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.boneMassKg)) }
-    var proteinText by remember { mutableStateOf(String.format(Locale.US, "%.1f", initialDraft.proteinPercent)) }
-    var bmrText by remember { mutableStateOf(initialDraft.bmrKcal.toString()) }
-    var metAgeText by remember { mutableStateOf(initialDraft.metabolicAge.toString()) }
+    var weightText by remember { mutableStateOf(fmtOptFloat(initialDraft.weightKg)) }
+    var bmiText by remember { mutableStateOf(fmtOptFloat(initialDraft.bmi)) }
+    var bfText by remember { mutableStateOf(fmtOptFloat(initialDraft.bodyFatPercent)) }
+    var muscleRateText by remember { mutableStateOf(fmtOptFloat(initialDraft.muscleRatePercent)) }
+    var ffmText by remember { mutableStateOf(fmtOptFloat(initialDraft.fatFreeMassKg)) }
+    var subFatText by remember { mutableStateOf(fmtOptFloat(initialDraft.subcutaneousFatPercent)) }
+    var visceralText by remember { mutableStateOf(fmtOptFloat(initialDraft.visceralFatIndex, 0)) }
+    var waterText by remember { mutableStateOf(fmtOptFloat(initialDraft.bodyWaterPercent)) }
+    var skeletalPctText by remember { mutableStateOf(fmtOptFloat(initialDraft.skeletalMusclePercent)) }
+    var muscleMassKgText by remember { mutableStateOf(fmtOptFloat(initialDraft.muscleMassKg)) }
+    var boneMassText by remember { mutableStateOf(fmtOptFloat(initialDraft.boneMassKg)) }
+    var proteinText by remember { mutableStateOf(fmtOptFloat(initialDraft.proteinPercent)) }
+    var bmrText by remember { mutableStateOf(fmtOptInt(initialDraft.bmrKcal)) }
+    var metAgeText by remember { mutableStateOf(fmtOptInt(initialDraft.metabolicAge)) }
     var parsedExplicitFatMassKg by remember { mutableStateOf<Float?>(initialDraft.explicitFatMassKg) }
 
     val coroutineScope = rememberCoroutineScope()

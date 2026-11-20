@@ -72,6 +72,7 @@ data class UserProfileData(
             altura = 155,
             heightCm = 155,
             peso = 72.0f,
+            weightKg = 72.0f,
             nivelExperiencia = "Avançado",
             localTreino = "Academia",
             massaMagra = 54.0f,
