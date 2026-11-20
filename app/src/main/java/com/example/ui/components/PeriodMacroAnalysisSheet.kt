@@ -79,7 +79,7 @@ fun PeriodMacroAnalysisEntryCard(
     runningSessions: List<RunningSession>? = null,
     gymSessions: List<GymWorkoutSession>? = null,
     recompRecords: List<BioimpedanceRecord>? = null,
-    userAgeYears: Int = 50,
+    userAgeYears: Int?,
     initialWindow: MacroPeriodWindow = MacroPeriodWindow.DAYS_7,
     initiallyExpanded: Boolean = false
 ) {
@@ -419,7 +419,7 @@ fun PeriodMacroAnalysisBottomSheet(
     runningSessions: List<RunningSession>,
     gymSessions: List<GymWorkoutSession>,
     recompRecords: List<BioimpedanceRecord>,
-    userAgeYears: Int = 50,
+    userAgeYears: Int?,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -721,7 +721,7 @@ fun PeriodMacroAnalysisBottomSheet(
                 metricsRow = listOf(
                     "FC Média" to if (p2.sessionsWithHrCount > 0) "${p2.avgHrBpm} bpm" else "--",
                     "FC Pico Real" to if (p2.sessionsWithHrCount > 0) "${p2.peakHrBpm} bpm" else "--",
-                    "FCmáx Calib." to "${p2.calibratedMaxHrBpm} bpm",
+                    "FCmáx Calib." to (p2.calibratedMaxHrBpm?.let { "$it bpm" } ?: "idade não informada"),
                     "Fator EF" to if (p2.sessionsWithHrCount > 0) String.format(ptBr, "%.2f m/bpm", p2.avgEfficiencyFactor) else "--"
                 ),
                 narrative = p2.narrative
@@ -973,11 +973,11 @@ private fun PillarDetailCard(
                         Text(
                             text = mVal,
                             color = Color.White,
-                            fontSize = 10.5.sp,
+                            fontSize = if (mVal.length > 14) 9.sp else 10.5.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace,
-                            maxLines = 1,
-                            softWrap = false,
+                            maxLines = if (mVal.length > 14) 2 else 1,
+                            softWrap = mVal.length > 14,
                             overflow = TextOverflow.Ellipsis,
                             textAlign = TextAlign.Center
                         )

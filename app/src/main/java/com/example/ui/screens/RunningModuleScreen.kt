@@ -578,6 +578,7 @@ fun RunningModuleScreen(viewModel: MainViewModel) {
             defaultShoeName = defaultShoeNameForHud,
             environment = selectedEnvironment,
             baselinePaceMinPerKm = userProfile.baselinePaceMinPerKm,
+            athleteAge = userProfile.idade.takeIf { it in 10..100 },
             isGentleMode = isGentleModeSession,
             coachVoiceEnabled = coachVoiceEnabled,
             hudFaceStyle = runHudFaceStyle,
@@ -4557,6 +4558,7 @@ fun RunningHUD(
     defaultShoeName: String = "Olympikus Corre 4",
     environment: String = "OUTDOOR",
     baselinePaceMinPerKm: Float? = null,
+    athleteAge: Int? = null,
     isGentleMode: Boolean = false,
     coachVoiceEnabled: Boolean = true,
     hudFaceStyle: com.example.data.model.RunHudFaceStyle = com.example.data.model.RunHudFaceStyle.CLEAN_PRO,
@@ -6571,6 +6573,7 @@ fun RunningHUD(
         showMediaMetadataPermissionDialog = showMediaMetadataPermissionDialog,
         totalElapsedSeconds = totalElapsedSeconds,
         bleManager = bleManager,
+        athleteAge = athleteAge,
         onDismissExitDialog = { showExitConfirmationDialog = false },
         onConfirmFinishFromExitDialog = {
             showExitConfirmationDialog = false
@@ -8087,6 +8090,7 @@ private fun RunningHudDialogsSection(
     showMediaMetadataPermissionDialog: Boolean,
     totalElapsedSeconds: Int,
     bleManager: HeartRateBleManager,
+    athleteAge: Int? = null,
     onDismissExitDialog: () -> Unit,
     onConfirmFinishFromExitDialog: () -> Unit,
     onDiscardFromExitDialog: () -> Unit,
@@ -8177,7 +8181,7 @@ private fun RunningHudDialogsSection(
             currentBpm = hudLiveBpm,
             avgBpm = bleManager.getAverageBpm(),
             maxBpm = bleManager.getMaxBpm(),
-            athleteAge = 50,
+            athleteAge = athleteAge,
             hrSamples = hudHrSamples,
             durationSeconds = totalElapsedSeconds,
             onDismiss = onDismissFullscreenHrModal

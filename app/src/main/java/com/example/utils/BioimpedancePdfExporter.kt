@@ -112,7 +112,7 @@ object BioimpedancePdfExporter {
         activeRecord: BioimpedanceRecord,
         allRecords: List<BioimpedanceRecord>,
         athleteName: String = "Esnaider",
-        athleteAge: Int = 50,
+        athleteAge: Int?,
         heightCm: Int?,
         waterGoalLabel: String = "4,2 L/dia"
     ) {
@@ -208,7 +208,7 @@ object BioimpedancePdfExporter {
         canvas: Canvas,
         activeRecord: BioimpedanceRecord,
         athleteName: String,
-        athleteAge: Int,
+        athleteAge: Int?,
         heightCm: Int?,
         waterGoalLabel: String,
         emissionDateTime: String
@@ -260,7 +260,7 @@ object BioimpedancePdfExporter {
         topY: Float,
         activeRecord: BioimpedanceRecord,
         athleteName: String,
-        athleteAge: Int,
+        athleteAge: Int?,
         heightCm: Int?,
         waterGoalLabel: String
     ): Float {
@@ -336,8 +336,9 @@ object BioimpedancePdfExporter {
         }
 
         val heightLabel = heightCm?.takeIf { it in 100..230 }?.let { "$it cm" } ?: "--"
+        val ageLabel = athleteAge?.takeIf { it in 10..100 }?.let { "$it anos" } ?: "idade não informada"
         canvas.drawText(
-            "Paciente/Atleta: $athleteName   |   Idade: $athleteAge anos   |   Altura: $heightLabel   |   Meta Hídrica: $waterGoalLabel",
+            "Paciente/Atleta: $athleteName   |   Idade: $ageLabel   |   Altura: $heightLabel   |   Meta Hídrica: $waterGoalLabel",
             left + 12f,
             cardTop + 16f,
             patientBoldPaint
@@ -850,7 +851,7 @@ object BioimpedancePdfExporter {
         activeRecord: BioimpedanceRecord,
         chronologicalRecords: List<BioimpedanceRecord>,
         athleteName: String,
-        athleteAge: Int,
+        athleteAge: Int?,
         heightCm: Int?,
         waterGoalLabel: String,
         emissionDateTime: String
@@ -911,7 +912,7 @@ object BioimpedancePdfExporter {
         canvas: Canvas,
         topY: Float,
         athleteName: String,
-        athleteAge: Int,
+        athleteAge: Int?,
         heightCm: Int?
     ): Float {
         val left = MARGIN_X
@@ -949,8 +950,9 @@ object BioimpedancePdfExporter {
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
         val heightLabel = heightCm?.takeIf { it in 100..230 }?.let { "$it cm" } ?: "--"
+        val ageLabel = athleteAge?.takeIf { it in 10..100 }?.let { "$it anos" } ?: "idade não informada"
         canvas.drawText(
-            "Atleta: $athleteName ($heightLabel • $athleteAge anos)   |   Continuação — Acompanhamento Longitudinal Completo",
+            "Atleta: $athleteName ($heightLabel • $ageLabel)   |   Continuação — Acompanhamento Longitudinal Completo",
             left + 16f,
             topY + 35.5f,
             subPaint

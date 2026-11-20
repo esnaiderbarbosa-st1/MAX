@@ -1164,7 +1164,7 @@ object RunningProgramManager {
      */
     fun analyzeRealPaceCalibration(
         history: List<RunningSession>,
-        userAge: Int = 50,
+        userAge: Int?,
         currentBaselinePaceMinPerKm: Float? = 7.0f,
         lastCalibrationTimestamp: Long = 0L,
         calibrationMode: PaceCalibrationMode = PaceCalibrationMode.AUTO_14_DAYS,

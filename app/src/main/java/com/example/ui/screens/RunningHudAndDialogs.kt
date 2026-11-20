@@ -1574,7 +1574,7 @@ fun RunningSummaryDialog(
                     val hrTimelineList = remember(hrTimeline) { hrTimeline.toHrTimelineList() }
                     com.example.ui.components.FullscreenSessionHeartRateModal(
                         dossier = previewDossier,
-                        athleteAge = 50,
+                        athleteAge = (userProfile?.idade ?: athleteAge).takeIf { it in 10..100 },
                         hrSamples = hrTimelineList,
                         splits = previewSession.kmSplitsJson.toRecordedKmSplits(),
                         weekNumber = previewSession.weekNumber,
@@ -2727,7 +2727,7 @@ fun FullscreenHeartRateModal(
     currentBpm: Int,
     avgBpm: Int?,
     maxBpm: Int?,
-    athleteAge: Int = 50,
+    athleteAge: Int?,
     hrSamples: List<Int> = emptyList(),
     durationSeconds: Int = 0,
     onRequestBleScan: (() -> Unit)? = null,
@@ -2810,11 +2810,11 @@ fun FullscreenHeartRateModal(
     val sessionPeak = maxOf(maxBpm ?: 0, effectiveSamples.maxOrNull() ?: 0, displayBpm)
     val sessionAvg = avgBpm ?: if (effectiveSamples.isNotEmpty()) effectiveSamples.average().toInt() else displayBpm
 
-    val theoreticalMaxHr = (220 - athleteAge.coerceIn(15, 95)).coerceAtLeast(150)
-    // Garante que a FC MÁX CALIBRADA use 190 bpm (calibrada para o atleta) e nunca seja um clone idêntico do PICO SESSÃO:
-    val calibratedMaxHr = remember(athleteAge, sessionPeak) {
+    val validAge = athleteAge?.takeIf { it in 10..100 }
+    val theoreticalMaxHr = validAge?.let { (220 - it.coerceIn(15, 95)).coerceAtLeast(150) }
+    val calibratedMaxHr = remember(validAge, sessionPeak) {
         val baseCalibrated = com.example.data.model.calculateEffectiveMaxHr(
-            ageYears = athleteAge,
+            ageYears = validAge,
             sessionMaxHrBpm = if (sessionPeak > 0) sessionPeak else null
         )
         if (sessionPeak > 0 && baseCalibrated == sessionPeak) {
@@ -2823,7 +2823,7 @@ fun FullscreenHeartRateModal(
             baseCalibrated
         }
     }
-    val isAutoCalibrated = calibratedMaxHr > theoreticalMaxHr
+    val isAutoCalibrated = theoreticalMaxHr != null && calibratedMaxHr > theoreticalMaxHr
 
     val enduranceSnap = remember(displayBpm, sessionAvg, calibratedMaxHr) {
         val refBpm = if (displayBpm > 0) displayBpm else if (sessionAvg > 0) sessionAvg else 135
@@ -2920,8 +2920,9 @@ fun FullscreenHeartRateModal(
                                 fontWeight = FontWeight.Black,
                                 letterSpacing = 1.sp
                             )
+                            val headerMaxHrLabel = if (calibratedMaxHr > 0) "$calibratedMaxHr bpm" else "idade não informada"
                             Text(
-                                text = "FCmáx Calibrada: $calibratedMaxHr bpm • LT1: ${enduranceSnap.lt1Bpm} bpm • LT2: ${enduranceSnap.lt2Bpm} bpm",
+                                text = "FCmáx Calibrada: $headerMaxHrLabel • LT1: ${enduranceSnap.lt1Bpm} bpm • LT2: ${enduranceSnap.lt2Bpm} bpm",
                                 color = Color(0xFF94A3B8),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium
@@ -3100,12 +3101,13 @@ fun FullscreenHeartRateModal(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = "$calibratedMaxHr bpm",
+                                        text = if (calibratedMaxHr > 0) "$calibratedMaxHr bpm" else "idade não informada",
                                         color = Color(0xFF00E676),
-                                        fontSize = 15.sp,
+                                        fontSize = if (calibratedMaxHr > 0) 15.sp else 10.sp,
                                         fontWeight = FontWeight.Black,
-                                        maxLines = 1,
-                                        softWrap = false
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                        maxLines = if (calibratedMaxHr > 0) 1 else 2,
+                                        softWrap = calibratedMaxHr <= 0
                                     )
                                 }
                             }

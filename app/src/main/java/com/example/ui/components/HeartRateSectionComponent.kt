@@ -417,7 +417,7 @@ private fun HaylouHeartRateCanvas(
 @Composable
 fun FullscreenSessionHeartRateModal(
     dossier: RunPhysiologyDossier,
-    athleteAge: Int = 50,
+    athleteAge: Int?,
     hrSamples: List<Int> = emptyList(),
     routePointItems: List<RoutePointItem> = emptyList(),
     splits: List<RecordedKmSplit> = emptyList(),
@@ -426,6 +426,7 @@ fun FullscreenSessionHeartRateModal(
     isLightMode: Boolean = false,
     onDismiss: () -> Unit
 ) {
+    val validAge = athleteAge?.takeIf { it in 10..100 }
     val effectiveSamples = remember(hrSamples, dossier.telemetrySamples) {
         val raw = hrSamples.filter { it in 45..240 }
         if (raw.size >= 2) {
@@ -434,12 +435,16 @@ fun FullscreenSessionHeartRateModal(
             dossier.telemetrySamples.map { it.heartRateBpm }.filter { it in 45..240 }
         }
     }
-    val calibratedMaxHr = remember(athleteAge, dossier.maxHeartRateBpm, dossier.effectiveMaxHeartRateBpm) {
+    val calibratedMaxHr = remember(validAge, dossier.maxHeartRateBpm, dossier.effectiveMaxHeartRateBpm) {
         val baseCal = maxOf(
             dossier.effectiveMaxHeartRateBpm,
-            calculateEffectiveMaxHr(ageYears = athleteAge, sessionMaxHrBpm = dossier.maxHeartRateBpm)
+            calculateEffectiveMaxHr(ageYears = validAge, sessionMaxHrBpm = dossier.maxHeartRateBpm)
         )
-        if (baseCal <= dossier.maxHeartRateBpm) dossier.maxHeartRateBpm + 4 else baseCal
+        when {
+            baseCal <= 0 -> 0
+            baseCal <= dossier.maxHeartRateBpm && dossier.maxHeartRateBpm > 0 -> dossier.maxHeartRateBpm + 4
+            else -> baseCal
+        }
     }
 
     FullscreenHeartRateAnalysisDialog(
@@ -455,8 +460,8 @@ fun FullscreenSessionHeartRateModal(
         splits = splits,
         zoneStats = emptyList(),
         isLightMode = isLightMode,
-        athleteAge = athleteAge,
-        calibratedMaxHrOverride = calibratedMaxHr,
+        athleteAge = validAge,
+        calibratedMaxHrOverride = calibratedMaxHr.takeIf { it > 0 },
         onDismiss = onDismiss
     )
 }
@@ -482,10 +487,11 @@ fun FullscreenHeartRateAnalysisDialog(
     splits: List<RecordedKmSplit>,
     zoneStats: List<Triple<HrZoneDefinition, Float, Int>> = emptyList(),
     isLightMode: Boolean,
-    athleteAge: Int = 50,
+    athleteAge: Int?,
     calibratedMaxHrOverride: Int? = null,
     onDismiss: () -> Unit
 ) {
+    val validAge = athleteAge?.takeIf { it in 10..100 }
     val ptBr = remember { Locale("pt", "BR") }
     val bgColor = if (isLightMode) Color(0xFFF8FAFC) else Color(0xFF0D0F14)
     val cardColor = if (isLightMode) Color.White else Color(0xFF151922)
@@ -493,18 +499,21 @@ fun FullscreenHeartRateAnalysisDialog(
     val primaryText = if (isLightMode) Color(0xFF0F172A) else Color(0xFFF8FAFC)
     val secondaryText = if (isLightMode) Color(0xFF64748B) else Color(0xFF94A3B8)
 
-    val calibratedMaxHr = remember(calibratedMaxHrOverride, athleteAge, maxHr) {
+    val calibratedMaxHr = remember(calibratedMaxHrOverride, validAge, maxHr) {
         val rawCal = calibratedMaxHrOverride ?: calculateEffectiveMaxHr(
-            ageYears = athleteAge,
-            sessionMaxHrBpm = maxHr,
-            historicalPeakHrBpm = maxHr
+            ageYears = validAge,
+            sessionMaxHrBpm = maxHr.takeIf { it > 0 },
+            historicalPeakHrBpm = maxHr.takeIf { it > 0 }
         )
-        // Nunca duplica o Pico da Sessão na 3ª coluna: FC Máx Calibrada do Perfil é sempre o teto fisiológico
-        if (rawCal <= maxHr && maxHr > 0) maxOf(maxHr + 4, 185) else rawCal
+        when {
+            rawCal <= 0 -> 0
+            rawCal <= maxHr && maxHr > 0 -> if (validAge != null) maxOf(maxHr + 4, 185) else maxHr + 4
+            else -> rawCal
+        }
     }
 
     val coherent5Zones = remember(effectiveSamples, avgHr, maxHr, calibratedMaxHr, durationSec) {
-        if (effectiveSamples.size >= 5) {
+        if (effectiveSamples.size >= 5 && calibratedMaxHr > 0) {
             computeCoherent5ZoneDistribution(
                 hrSamples = effectiveSamples,
                 avgBpm = avgHr,
@@ -721,13 +730,19 @@ fun FullscreenHeartRateAnalysisDialog(
                                         textAlign = TextAlign.Center,
                                         maxLines = 1
                                     )
+                                    val showMissingAge = calibratedMaxHr <= 0 && validAge == null
                                     Text(
-                                        text = if (avgHr > 0 || maxHr > 0) "$calibratedMaxHr bpm" else "-- bpm",
+                                        text = when {
+                                            calibratedMaxHr > 0 && (avgHr > 0 || maxHr > 0) -> "$calibratedMaxHr bpm"
+                                            showMissingAge -> "idade não informada"
+                                            else -> "-- bpm"
+                                        },
                                         color = Color(0xFF00E676),
-                                        fontSize = 20.sp,
+                                        fontSize = if (showMissingAge) 11.sp else 20.sp,
                                         fontWeight = FontWeight.Black,
-                                        maxLines = 1,
-                                        softWrap = false
+                                        textAlign = TextAlign.Center,
+                                        maxLines = if (showMissingAge) 2 else 1,
+                                        softWrap = showMissingAge
                                     )
                                 }
                             }

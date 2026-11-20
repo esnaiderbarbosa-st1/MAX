@@ -324,6 +324,7 @@ fun RunningHistoryScreen(viewModel: MainViewModel) {
                     com.example.ui.components.PeriodMacroAnalysisEntryCard(
                         runningSessions = sessions,
                         gymSessions = gymSessions,
+                        userAgeYears = userProfile.idade.takeIf { it in 10..100 },
                         initiallyExpanded = false
                     )
                 }
@@ -533,6 +534,7 @@ fun RunningHistoryScreen(viewModel: MainViewModel) {
                     com.example.ui.components.PeriodMacroAnalysisEntryCard(
                         runningSessions = sessions,
                         gymSessions = gymSessions,
+                        userAgeYears = userProfile.idade.takeIf { it in 10..100 },
                         initiallyExpanded = false
                     )
                 }

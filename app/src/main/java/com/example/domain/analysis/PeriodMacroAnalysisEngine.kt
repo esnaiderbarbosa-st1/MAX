@@ -115,7 +115,7 @@ data class AerobicEfficiencyPillar(
     val sessionsWithHrCount: Int,
     val avgHrBpm: Int,
     val peakHrBpm: Int,
-    val calibratedMaxHrBpm: Int,
+    val calibratedMaxHrBpm: Int?,
     val avgEfficiencyFactor: Double, // Velocidade (m/min) / FC Média
     val firstHalfEf: Double,
     val secondHalfEf: Double,
@@ -197,7 +197,7 @@ object PeriodMacroAnalysisEngine {
         allRunningSessions: List<RunningSession>,
         allGymSessions: List<GymWorkoutSession>,
         allRecompRecords: List<BioimpedanceRecord>,
-        userAgeYears: Int = 50
+        userAgeYears: Int?
     ): PeriodMacroDossier {
         return runCatching {
             val nowMs = System.currentTimeMillis()
@@ -285,7 +285,8 @@ object PeriodMacroAnalysisEngine {
         window: MacroPeriodWindow,
         runningSessionsOverride: List<RunningSession>? = null,
         gymSessionsOverride: List<GymWorkoutSession>? = null,
-        recompRecordsOverride: List<BioimpedanceRecord>? = null
+        recompRecordsOverride: List<BioimpedanceRecord>? = null,
+        userAgeYears: Int? = null
     ): PeriodMacroDossier {
         val gymSessions = gymSessionsOverride ?: runCatching {
             GymHistoryRepository.init(context)
@@ -302,7 +303,8 @@ object PeriodMacroAnalysisEngine {
             window = window,
             allRunningSessions = runningSessions,
             allGymSessions = gymSessions,
-            allRecompRecords = recompRecords
+            allRecompRecords = recompRecords,
+            userAgeYears = userAgeYears
         )
     }
 
@@ -442,12 +444,15 @@ object PeriodMacroAnalysisEngine {
     private fun computePillar2Aerobic(
         runs: List<RunningSession>,
         allRuns: List<RunningSession>,
-        userAgeYears: Int
+        userAgeYears: Int?
     ): AerobicEfficiencyPillar {
         val runsWithHr = runs.filter { (it.avgHr ?: 0) > 60 }
-        val agePredictedMax = (220 - userAgeYears).coerceIn(150, 205)
+        val validAge = userAgeYears?.takeIf { it in 10..100 }
         val historicalPeakHr = (allRuns.mapNotNull { it.maxHr } + runs.mapNotNull { it.maxHr }).maxOrNull() ?: 0
-        val calibratedMaxHr = maxOf(agePredictedMax, historicalPeakHr)
+        val calibratedMaxHr: Int? = validAge?.let { age ->
+            val agePredictedMax = (220 - age).coerceIn(150, 205)
+            maxOf(agePredictedMax, historicalPeakHr)
+        }
 
         if (runsWithHr.isEmpty()) {
             return AerobicEfficiencyPillar(
@@ -494,18 +499,20 @@ object PeriodMacroAnalysisEngine {
             Triple(avgEf, avgEf, 0.0)
         }
 
+        val exceedsCalibratedThreshold = calibratedMaxHr != null && avgHr > (calibratedMaxHr * 0.91).roundToInt()
         val status = when {
             efDeltaPct >= 1.5 -> AerobicEfficiencyStatus.GAIN
-            efDeltaPct <= -3.0 || (avgHr > (calibratedMaxHr * 0.91).roundToInt()) -> AerobicEfficiencyStatus.DRIFT_WARNING
+            efDeltaPct <= -3.0 || exceedsCalibratedThreshold -> AerobicEfficiencyStatus.DRIFT_WARNING
             else -> AerobicEfficiencyStatus.STABLE
         }
 
         val progress = ((avgEf - 0.65) / (1.45 - 0.65)).toFloat().coerceIn(0.25f, 1.0f)
+        val calibratedMaxHrLabel = calibratedMaxHr?.let { "$it bpm" } ?: "idade não informada"
 
         val narrative = buildString {
             append("Telemetria ECG registrada em ${runsWithHr.size} ")
             append(if (runsWithHr.size == 1) "sessão" else "sessões")
-            append(": FC média de $avgHr bpm e pico real de $peakHr bpm (FCmáx calibrada: $calibratedMaxHr bpm). ")
+            append(": FC média de $avgHr bpm e pico real de $peakHr bpm (FCmáx calibrada: $calibratedMaxHrLabel). ")
             append("O Fator de Eficiência Aeróbica (metros percorridos por batimento cardíaco) atingiu ${String.format(ptBr, "%.2f", avgEf)} m/bpm. ")
             if (efPerSession.size >= 2) {
                 val sign = if (efDeltaPct >= 0) "+" else ""
@@ -814,7 +821,8 @@ object PeriodMacroAnalysisEngine {
             appendLine("--------------------------------------------------")
             appendLine("• Status Cardíaco: ${p2.status.badgeLabel}")
             if (p2.sessionsWithHrCount > 0) {
-                appendLine("• FC Média / Pico Real no Período: ${p2.avgHrBpm} bpm / ${p2.peakHrBpm} bpm (FCmáx Calibrada: ${p2.calibratedMaxHrBpm} bpm)")
+                val maxHrReportText = p2.calibratedMaxHrBpm?.let { "$it bpm" } ?: "idade não informada"
+                appendLine("• FC Média / Pico Real no Período: ${p2.avgHrBpm} bpm / ${p2.peakHrBpm} bpm (FCmáx Calibrada: $maxHrReportText)")
                 appendLine("• Fator de Eficiência (Velocidade ÷ BPM): ${String.format(ptBr, "%.2f", p2.avgEfficiencyFactor)} m/bpm")
             } else {
                 appendLine("• Telemetria BLE: Sem sessões com cinta cardíaca no período")
@@ -850,7 +858,7 @@ object PeriodMacroAnalysisEngine {
 
     private fun buildSafeFallbackDossier(window: MacroPeriodWindow): PeriodMacroDossier {
         val p1 = computePillar1Volume(emptyList(), window)
-        val p2 = computePillar2Aerobic(emptyList(), emptyList(), 50)
+        val p2 = computePillar2Aerobic(emptyList(), emptyList(), null)
         val p3 = computePillar3Hybrid(emptyList(), emptyList(), p1)
         val p4 = computePillar4Recomp(emptyList(), emptyList())
         val directive = NextWeekDirective.MAINTAIN_PROGRESSION

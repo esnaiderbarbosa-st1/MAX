@@ -1612,15 +1612,16 @@ fun calculateSprintAnalytics(
  * em vez de "108% da FCmáx estimada de 170 bpm".
  */
 fun calculateEffectiveMaxHr(
-    ageYears: Int = 50,
+    ageYears: Int?,
     sessionMaxHrBpm: Int? = null,
     historicalPeakHrBpm: Int? = null
 ): Int {
-    val safeAge = ageYears.coerceIn(18, 80)
-    val ageFormulaMax = (220 - safeAge).coerceIn(155, 205)
     val sessionPeak = sessionMaxHrBpm ?: 0
     val histPeak = historicalPeakHrBpm ?: 0
     val realObservedPeak = maxOf(sessionPeak, histPeak)
+    val validAge = ageYears?.takeIf { it in 10..100 } ?: return realObservedPeak
+    val safeAge = validAge.coerceIn(18, 80)
+    val ageFormulaMax = (220 - safeAge).coerceIn(155, 205)
     return when {
         realObservedPeak > ageFormulaMax -> maxOf(realObservedPeak + 4, 190)
         safeAge == 50 -> 190

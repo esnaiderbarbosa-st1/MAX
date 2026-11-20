@@ -713,7 +713,7 @@ fun RunningSessionDetailScreen(viewModel: MainViewModel) {
                 if (showDetailHrModal) {
                     com.example.ui.components.FullscreenSessionHeartRateModal(
                         dossier = physiologyDossier,
-                        athleteAge = userProfile?.idade ?: 50,
+                        athleteAge = userProfile.idade.takeIf { it in 10..100 },
                         hrSamples = currentSession.hrTimeline.toHrTimelineList(),
                         splits = currentSession.kmSplitsJson.toRecordedKmSplits(),
                         weekNumber = currentSession.weekNumber,

@@ -499,6 +499,7 @@ fun BodyRecompScreen(
                                 context = context,
                                 activeRecord = activeRecord,
                                 allRecords = records,
+                                athleteAge = activeProfile?.idade?.takeIf { it in 10..100 },
                                 heightCm = activeProfileHeightCm
                             )
                         }
@@ -575,7 +576,8 @@ fun BodyRecompScreen(
                 // =========================================================================
                 item {
                     com.example.ui.components.PeriodMacroAnalysisEntryCard(
-                        recompRecords = records
+                        recompRecords = records,
+                        userAgeYears = activeProfile?.idade?.takeIf { it in 10..100 }
                     )
                 }
 

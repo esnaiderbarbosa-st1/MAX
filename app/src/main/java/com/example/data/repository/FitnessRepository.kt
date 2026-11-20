@@ -383,14 +383,6 @@ class FitnessRepository(private val db: AppDatabase) {
         if (existing == null) {
             com.example.utils.WeightCalculator.activeUserProfile = UserProfileData.PRESET_ESNAIDER
             db.userDao().insertProfile(UserProfileData.PRESET_ESNAIDER)
-        } else if (existing.nome.startsWith("Usuário") || existing.nivelExperiencia != "Avançado") {
-            val updated = if (existing.nome.contains("Alyne", ignoreCase = true)) {
-                UserProfileData.PRESET_ALYNE
-            } else {
-                UserProfileData.PRESET_ESNAIDER
-            }
-            com.example.utils.WeightCalculator.activeUserProfile = updated
-            db.userDao().insertProfile(updated)
         } else {
             com.example.utils.WeightCalculator.activeUserProfile = existing
         }
