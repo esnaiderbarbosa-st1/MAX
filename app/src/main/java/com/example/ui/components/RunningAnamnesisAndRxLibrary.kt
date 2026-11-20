@@ -2884,12 +2884,17 @@ fun HybridReadinessExecutiveDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.94f)
-                .padding(vertical = 16.dp),
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(top = 12.dp, bottom = 12.dp),
             shape = RoundedCornerShape(22.dp),
             color = Color(0xFF0F131A),
             border = BorderStroke(1.5.dp, report.accentColor.copy(alpha = 0.55f))
@@ -2897,298 +2902,326 @@ fun HybridReadinessExecutiveDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .padding(horizontal = 18.dp, vertical = 16.dp)
             ) {
-                // Cabeçalho Executivo
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "RAIO-X DE PRONTIDÃO HÍBRIDA",
-                            color = Color(0xFF00E5FF),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 1.sp
-                        )
-                        Text(
-                            text = "Musculação (MAX GYM) × Corrida (MAX RUN)",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                    IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFF1E2532))
+                    // Cabeçalho Executivo
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Fechar Raio-X de Prontidão",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-
-                // 1. Score de Prontidão Híbrida (0-100%)
-                Surface(
-                    color = Color(0xFF161C26),
-                    shape = RoundedCornerShape(16.dp),
-                    border = BorderStroke(1.dp, report.accentColor.copy(alpha = 0.45f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "SCORE DE PRONTIDÃO NEUROMUSCULAR",
-                                    color = Color(0xFF94A3B8),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = report.tierTitle,
-                                    color = report.accentColor,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Black
-                                )
-                            }
-                            Surface(
-                                color = report.accentColor.copy(alpha = 0.18f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, report.accentColor.copy(alpha = 0.6f))
-                            ) {
-                                Text(
-                                    text = "${report.scorePct}%",
-                                    color = report.accentColor,
-                                    fontSize = 20.sp,
-                                    fontWeight = FontWeight.Black,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                )
-                            }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "RAIO-X DE PRONTIDÃO HÍBRIDA",
+                                color = Color(0xFF00E5FF),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 1.sp
+                            )
+                            Text(
+                                text = "Musculação (MAX GYM) × Corrida (MAX RUN)",
+                                color = Color(0xFF94A3B8),
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
-
-                        // Barra de Progresso do Score
-                        Box(
+                        IconButton(
+                            onClick = onDismiss,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .height(8.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(Color(0xFF262F3F))
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF1E2532))
+                                .testTag("btn_close_hybrid_readiness_top")
                         ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Fechar Raio-X de Prontidão",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    // 1. Score de Prontidão Híbrida (0-100%)
+                    Surface(
+                        color = Color(0xFF161C26),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, report.accentColor.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "SCORE DE PRONTIDÃO NEUROMUSCULAR",
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = report.tierTitle,
+                                        color = report.accentColor,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                }
+                                Surface(
+                                    color = report.accentColor.copy(alpha = 0.18f),
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, report.accentColor.copy(alpha = 0.6f))
+                                ) {
+                                    Text(
+                                        text = "${report.scorePct}%",
+                                        color = report.accentColor,
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Black,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
+
+                            // Barra de Progresso do Score
                             Box(
                                 modifier = Modifier
-                                    .fillMaxWidth((report.scorePct / 100f).coerceIn(0.08f, 1f))
-                                    .fillMaxHeight()
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(report.accentColor)
-                            )
-                        }
-
-                        Text(
-                            text = "Faixas: Alta (90–100%) • Moderada (65–89%) • Atenção / Recuperação (< 65%)",
-                            color = Color(0xFF94A3B8),
-                            fontSize = 10.5.sp
-                        )
-                    }
-                }
-
-                // 2. Status Muscular de Membros Inferiores (48h)
-                val legColor = if (report.hasLowerBodySession48h) Color(0xFFF59E0B) else Color(0xFF22C55E)
-                Surface(
-                    color = Color(0xFF151A24),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, legColor.copy(alpha = 0.38f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(13.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "MEMBROS INFERIORES (ÚLTIMAS 48H)",
-                                color = Color(0xFF94A3B8),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Surface(
-                                color = legColor.copy(alpha = 0.16f),
-                                shape = RoundedCornerShape(6.dp)
-                            ) {
-                                Text(
-                                    text = if (report.hasLowerBodySession48h) "EM RECUPERAÇÃO" else "DESCANSADO",
-                                    color = legColor,
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.Black,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                        Text(
-                            text = report.lowerBodyStatusTitle,
-                            color = Color.White,
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = report.lowerBodyStatusDetail,
-                            color = Color(0xFFCBD5E1),
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp
-                        )
-                    }
-                }
-
-                // 3. Status Autonômico / Cardiovascular (48h)
-                val cardioColor = when {
-                    report.isHighCardioWear48h -> Color(0xFFEF4444)
-                    report.hasRunningSession48h -> Color(0xFF38BDF8)
-                    else -> Color(0xFF22C55E)
-                }
-                Surface(
-                    color = Color(0xFF151A24),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, cardioColor.copy(alpha = 0.38f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(13.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "STATUS AUTONÔMICO & CARDIOVASCULAR (48H)",
-                                color = Color(0xFF94A3B8),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Surface(
-                                color = cardioColor.copy(alpha = 0.16f),
-                                shape = RoundedCornerShape(6.dp)
-                            ) {
-                                Text(
-                                    text = when {
-                                        report.isHighCardioWear48h -> "Z4/Z5 ELEVADO"
-                                        report.hasRunningSession48h -> "ESTÍMULO OK"
-                                        else -> "100% PRONTO"
-                                    },
-                                    color = cardioColor,
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.Black,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                        Text(
-                            text = report.cardioStatusTitle,
-                            color = Color.White,
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = report.cardioStatusDetail,
-                            color = Color(0xFFCBD5E1),
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp
-                        )
-                    }
-                }
-
-                // 4. Parecer & Sugestão Inteligente de Ajuste (Botão de Ação p/ Rodagem Regenerativa Z2)
-                Surface(
-                    color = Color(0xFF131D2B),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(13.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Text(
-                            text = "SUGESTÃO INTELIGENTE DE AUTO-REGULAÇÃO",
-                            color = Color(0xFF00E5FF),
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Black
-                        )
-                        Text(
-                            text = report.coachRecommendationText,
-                            color = Color(0xFFE2E8F0),
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp
-                        )
-
-                        if (swapConfirmedLocal) {
-                            Surface(
-                                color = Color(0xFF10B981).copy(alpha = 0.18f),
-                                shape = RoundedCornerShape(10.dp),
-                                border = BorderStroke(1.dp, Color(0xFF10B981)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = "✅ Sessão de hoje ajustada para Rodagem Regenerativa Z2 (Proteção de Membros Inferiores Ativa)",
-                                    color = Color(0xFF34D399),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                                )
-                            }
-                        } else {
-                            Button(
-                                onClick = {
-                                    AudioSynth.playTickSound()
-                                    swapConfirmedLocal = true
-                                    onSwapToRegenerativeZ2()
-                                },
-                                modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(min = 50.dp)
-                                    .testTag("btn_swap_to_regenerative_z2"),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (report.shouldSuggestRegenerativeZ2Swap) {
-                                        Color(0xFF00E676)
-                                    } else {
-                                        Color(0xFF1E293B)
-                                    }
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(Color(0xFF262F3F))
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth((report.scorePct / 100f).coerceIn(0.08f, 1f))
+                                        .fillMaxHeight()
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(report.accentColor)
                                 )
+                            }
+
+                            Text(
+                                text = "Faixas: Alta (90–100%) • Moderada (65–89%) • Atenção / Recuperação (< 65%)",
+                                color = Color(0xFF94A3B8),
+                                fontSize = 10.5.sp
+                            )
+                        }
+                    }
+
+                    // 2. Status Muscular de Membros Inferiores (48h)
+                    val legColor = if (report.hasLowerBodySession48h) Color(0xFFF59E0B) else Color(0xFF22C55E)
+                    Surface(
+                        color = Color(0xFF151A24),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, legColor.copy(alpha = 0.38f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(13.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Trocar sessão de hoje por Rodagem Regenerativa Z2 (Proteger Membros Inferiores)",
-                                    color = if (report.shouldSuggestRegenerativeZ2Swap) Color(0xFF06130E) else Color(0xFF38BDF8),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Black,
-                                    textAlign = TextAlign.Center
+                                    text = "MEMBROS INFERIORES (ÚLTIMAS 48H)",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 10.sp,
+                                    lineHeight = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
+                                Surface(
+                                    color = legColor.copy(alpha = 0.16f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = if (report.hasLowerBodySession48h) "EM RECUPERAÇÃO" else "DESCANSADO",
+                                        color = legColor,
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.Black,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = report.lowerBodyStatusTitle,
+                                color = Color.White,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = report.lowerBodyStatusDetail,
+                                color = Color(0xFFCBD5E1),
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+
+                    // 3. Status Autonômico / Cardiovascular (48h)
+                    val cardioColor = when {
+                        report.isHighCardioWear48h -> Color(0xFFEF4444)
+                        report.hasRunningSession48h -> Color(0xFF38BDF8)
+                        else -> Color(0xFF22C55E)
+                    }
+                    Surface(
+                        color = Color(0xFF151A24),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, cardioColor.copy(alpha = 0.38f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(13.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "STATUS AUTONÔMICO & CARDIOVASCULAR (48H)",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 10.sp,
+                                    lineHeight = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Surface(
+                                    color = cardioColor.copy(alpha = 0.16f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = when {
+                                            report.isHighCardioWear48h -> "Z4/Z5 ELEVADO"
+                                            report.hasRunningSession48h -> "ESTÍMULO OK"
+                                            else -> "100% PRONTO"
+                                        },
+                                        color = cardioColor,
+                                        fontSize = 9.5.sp,
+                                        fontWeight = FontWeight.Black,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = report.cardioStatusTitle,
+                                color = Color.White,
+                                fontSize = 13.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = report.cardioStatusDetail,
+                                color = Color(0xFFCBD5E1),
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+
+                    // 4. Parecer & Sugestão Inteligente de Ajuste (Botão de Ação p/ Rodagem Regenerativa Z2)
+                    Surface(
+                        color = Color(0xFF131D2B),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(13.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "SUGESTÃO INTELIGENTE DE AUTO-REGULAÇÃO",
+                                color = Color(0xFF00E5FF),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                            Text(
+                                text = report.coachRecommendationText,
+                                color = Color(0xFFE2E8F0),
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+
+                            if (swapConfirmedLocal) {
+                                Surface(
+                                    color = Color(0xFF10B981).copy(alpha = 0.18f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, Color(0xFF10B981)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "✅ Sessão de hoje ajustada para Rodagem Regenerativa Z2 (Proteção de Membros Inferiores Ativa)",
+                                        color = Color(0xFF34D399),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                                    )
+                                }
+                            } else {
+                                Button(
+                                    onClick = {
+                                        AudioSynth.playTickSound()
+                                        swapConfirmedLocal = true
+                                        onSwapToRegenerativeZ2()
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 50.dp)
+                                        .testTag("btn_swap_to_regenerative_z2"),
+                                    shape = RoundedCornerShape(12.dp),
+                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (report.shouldSuggestRegenerativeZ2Swap) {
+                                            Color(0xFF00E676)
+                                        } else {
+                                            Color(0xFF1E293B)
+                                        }
+                                    )
+                                ) {
+                                    Text(
+                                        text = "Trocar sessão de hoje por Rodagem Regenerativa Z2 (Proteger Membros Inferiores)",
+                                        color = if (report.shouldSuggestRegenerativeZ2Swap) Color(0xFF06130E) else Color(0xFF38BDF8),
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp,
+                                        fontWeight = FontWeight.Black,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(14.dp))
 
                 Button(
                     onClick = {
@@ -3197,7 +3230,8 @@ fun HybridReadinessExecutiveDialog(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp),
+                        .heightIn(min = 48.dp)
+                        .testTag("btn_close_hybrid_readiness_xray"),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF262D3D))
                 ) {
