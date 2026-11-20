@@ -145,6 +145,11 @@ object GpsEvaluator {
         if (implicitSpeedMps > GpsConfig.MAX_SPEED_MPS && (dopplerSpeedMps > GpsConfig.MAX_SPEED_MPS || dopplerSpeedMps == 0.0)) {
             return EvaluationResult.Rejected("UNREALISTIC_SPEED")
         }
+        if (implicitSpeedMps > GpsConfig.ABSOLUTE_MAX_IMPLICIT_SPEED_MPS &&
+            distMeters > GpsConfig.ABSOLUTE_JUMP_MIN_DISTANCE_METERS
+        ) {
+            return EvaluationResult.Rejected("UNREALISTIC_SPEED")
+        }
 
         // Gate 3: Sensor Fusion (Zero-Cadence Stationary Lock)
         if (com.example.utils.StepCadenceTracker.hasStepSensor && !isPhysicallyMoving) {

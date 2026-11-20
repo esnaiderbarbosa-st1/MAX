@@ -234,4 +234,78 @@ class GpsEvaluatorTest {
             .format(distanceBeforePause, totalDistance))
         assertTrue("Trecho percorrido durante a pausa foi descartado corretamente", abs(totalDistance - 200.0) < 10.0)
     }
+
+    @Test
+    fun testJump500mIn1sWithDoppler3mpsAndRecordedPoints5_isRejectedAsUnrealisticSpeed() {
+        val startLat = -23.550520
+        val startLon = -46.633308
+        val sessionStartNanos = 1_000_000_000_000L
+        val anchorNanos = sessionStartNanos + 60_000_000_000L
+
+        val anchor = GpsPoint(startLat, startLon, 5f, anchorNanos, 3f)
+        val (jumpLat, jumpLon) = offsetLatLon(startLat, startLon, 500.0, 0.0)
+        val jumpNanos = anchorNanos + 1_000_000_000L
+        val jumpPoint = GpsPoint(jumpLat, jumpLon, 5f, jumpNanos, 3f)
+
+        val result = GpsEvaluator.evaluatePoint(
+            anchor = anchor,
+            newPoint = jumpPoint,
+            currentNanos = jumpNanos,
+            isPaused = false,
+            sessionStartNanos = sessionStartNanos,
+            recordedPointsCount = 5
+        )
+        assertTrue("Salto de 500m em 1s com Doppler 3 m/s deve ser rejeitado", result is EvaluationResult.Rejected)
+        assertEquals("UNREALISTIC_SPEED", (result as EvaluationResult.Rejected).reason)
+    }
+
+    @Test
+    fun testLegitimateFastMovement7mpsFor2s_isAccepted() {
+        val startLat = -23.550520
+        val startLon = -46.633308
+        val sessionStartNanos = 1_000_000_000_000L
+        val anchorNanos = sessionStartNanos + 60_000_000_000L
+
+        val anchor = GpsPoint(startLat, startLon, 5f, anchorNanos, 7f)
+        val (nextLat, nextLon) = offsetLatLon(startLat, startLon, 14.0, 0.0)
+        val nextNanos = anchorNanos + 2_000_000_000L
+        val fastPoint = GpsPoint(nextLat, nextLon, 5f, nextNanos, 7f)
+
+        val result = GpsEvaluator.evaluatePoint(
+            anchor = anchor,
+            newPoint = fastPoint,
+            currentNanos = nextNanos,
+            isPaused = false,
+            sessionStartNanos = sessionStartNanos,
+            recordedPointsCount = 5
+        )
+        assertTrue("Movimento legítimo rápido (7 m/s por 2s, ~14m) deve ser aceito", result is EvaluationResult.Accepted)
+        val accepted = result as EvaluationResult.Accepted
+        assertTrue("Distância adicionada deve ser próxima de 14m", abs(accepted.distanceAddedMeters - 14.0) < 1.0)
+    }
+
+    @Test
+    fun testSignalLossRecovery100mIn30s_isAccepted() {
+        val startLat = -23.550520
+        val startLon = -46.633308
+        val sessionStartNanos = 1_000_000_000_000L
+        val anchorNanos = sessionStartNanos + 60_000_000_000L
+
+        val anchor = GpsPoint(startLat, startLon, 5f, anchorNanos, 3.3f)
+        val (nextLat, nextLon) = offsetLatLon(startLat, startLon, 100.0, 0.0)
+        val nextNanos = anchorNanos + 30_000_000_000L
+        val recoveredPoint = GpsPoint(nextLat, nextLon, 5f, nextNanos, 3.3f)
+
+        val result = GpsEvaluator.evaluatePoint(
+            anchor = anchor,
+            newPoint = recoveredPoint,
+            currentNanos = nextNanos,
+            isPaused = false,
+            sessionStartNanos = sessionStartNanos,
+            recordedPointsCount = 5
+        )
+        assertTrue("Retorno após perda de sinal (100m em 30s) deve ser aceito", result is EvaluationResult.Accepted)
+        val accepted = result as EvaluationResult.Accepted
+        assertTrue("Distância adicionada deve ser próxima de 100m", abs(accepted.distanceAddedMeters - 100.0) < 2.0)
+    }
 }
