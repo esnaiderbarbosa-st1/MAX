@@ -154,26 +154,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadPersistedUpcomingRaces(): List<com.example.data.model.UpcomingRaceEvent> {
         return try {
             val json = sharedPrefs.getString("upcoming_races_json_v1", null)
-            val parsed = json.toUpcomingRaceEvents()
-            val defaultTaf = com.example.engine.HybridLoadCoachEngine.buildDefaultTafUpcomingEvent()
-            if (parsed.isEmpty()) {
-                val initial = listOf(defaultTaf)
-                sharedPrefs.edit().putString("upcoming_races_json_v1", initial.toUpcomingRacesJson()).apply()
-                initial
-            } else if (
-                parsed.size == 1 &&
-                parsed.first().id == "upcoming_bptran_4" &&
-                !sharedPrefs.getBoolean("taf_pmac_auto_seeded_v1", false)
-            ) {
-                sharedPrefs.edit().putBoolean("taf_pmac_auto_seeded_v1", true).apply()
-                val updated = listOf(defaultTaf) + parsed
-                sharedPrefs.edit().putString("upcoming_races_json_v1", updated.toUpcomingRacesJson()).apply()
-                updated.sortedBy { it.raceDateMillis }
-            } else {
-                parsed.sortedBy { it.raceDateMillis }
-            }
+            json.toUpcomingRaceEvents().sortedBy { it.raceDateMillis }
         } catch (e: Exception) {
-            listOf(com.example.engine.HybridLoadCoachEngine.buildDefaultTafUpcomingEvent())
+            emptyList()
         }
     }
 
@@ -4477,6 +4460,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             com.example.utils.DeveloperTools.clearRecovery(db)
         }
+    }
+
+    fun devImportAuthorHistory(onResult: (Int) -> Unit) {
+        viewModelScope.launch {
+            val inserted = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.utils.DeveloperTools.importAuthorHistory(db)
+            }
+            onResult(inserted)
+        }
+    }
+
+    fun devAddDefaultTafUpcomingEvent(): Boolean {
+        val defaultTaf = com.example.engine.HybridLoadCoachEngine.buildDefaultTafUpcomingEvent()
+        if (_upcomingRaces.value.any { it.id == defaultTaf.id }) {
+            return false
+        }
+        saveUpcomingRaceEvent(defaultTaf)
+        return true
     }
 
     fun getFlowStateString(flowState: WorkoutFlowState): String {

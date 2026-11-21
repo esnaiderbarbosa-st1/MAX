@@ -861,13 +861,11 @@ fun deduplicateRunningSessions(sessions: List<RunningSession>): Pair<List<Runnin
             }
 
             fun is30OctFreeRunSignature(s: RunningSession): Boolean {
-                return (s.distanceMeters in 1880..1900 && s.durationSec in 720..732) ||
-                    s.id == "run_seed_2026_10_30_free_run"
+                return s.id == "run_seed_2026_10_30_free_run"
             }
 
             fun areDuplicates(a: RunningSession, b: RunningSession): Boolean {
                 if (a.id == b.id) return true
-                if (is30OctFreeRunSignature(a) && is30OctFreeRunSignature(b)) return true
                 val withinTwoMinutes = kotlin.math.abs(a.date - b.date) <= 120_000L
                 if (!withinTwoMinutes) return false
                 val sameDur = kotlin.math.abs(a.durationSec - b.durationSec) <= 5
@@ -884,9 +882,7 @@ fun deduplicateRunningSessions(sessions: List<RunningSession>): Pair<List<Runnin
                     val normalized = if (is30OctFreeRunSignature(candidate) || RunningProgramManager.isEffectiveFreeRun(candidate)) {
                         candidate.copy(
                             sessionType = if (candidate.sessionType.isBlank() || candidate.sessionType == "VOLUME" || candidate.sessionType == "CONTINUOUS") "FREE_RUN" else candidate.sessionType,
-                            weekNumber = if (is30OctFreeRunSignature(candidate)) 0 else candidate.weekNumber,
-                            avgHr = candidate.avgHr ?: if (is30OctFreeRunSignature(candidate)) 160 else null,
-                            maxHr = candidate.maxHr ?: if (is30OctFreeRunSignature(candidate)) 176 else null
+                            weekNumber = if (is30OctFreeRunSignature(candidate)) 0 else candidate.weekNumber
                         )
                     } else {
                         candidate
@@ -901,8 +897,8 @@ fun deduplicateRunningSessions(sessions: List<RunningSession>): Pair<List<Runnin
                     val merged = primary.copy(
                         sessionType = if (is30Oct || RunningProgramManager.isEffectiveFreeRun(primary) || RunningProgramManager.isEffectiveFreeRun(candidate)) "FREE_RUN" else primary.sessionType,
                         weekNumber = if (is30Oct) 0 else primary.weekNumber,
-                        avgHr = primary.avgHr?.takeIf { it > 0 } ?: candidate.avgHr?.takeIf { it > 0 } ?: if (is30Oct) 160 else null,
-                        maxHr = primary.maxHr?.takeIf { it > 0 } ?: candidate.maxHr?.takeIf { it > 0 } ?: if (is30Oct) 176 else null,
+                        avgHr = primary.avgHr?.takeIf { it > 0 } ?: candidate.avgHr?.takeIf { it > 0 },
+                        maxHr = primary.maxHr?.takeIf { it > 0 } ?: candidate.maxHr?.takeIf { it > 0 },
                         hrTimeline = primary.hrTimeline?.takeIf { it.isNotBlank() } ?: candidate.hrTimeline,
                         kmSplitsJson = primary.kmSplitsJson?.takeIf { it.isNotBlank() } ?: candidate.kmSplitsJson,
                         routePointsJson = primary.routePointsJson?.takeIf { it.isNotBlank() } ?: candidate.routePointsJson,

@@ -1423,6 +1423,68 @@ fun AppSettingsScreen(
                                     }
                                 }
 
+                                if (com.example.BuildConfig.DEBUG) {
+                                    var devSeedStatusMessage by remember { mutableStateOf<String?>(null) }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            viewModel.devImportAuthorHistory { inserted ->
+                                                val msg = when (inserted) {
+                                                    0 -> "Histórico do autor já importado"
+                                                    1 -> "1 sessão importada"
+                                                    else -> "$inserted sessões importadas"
+                                                }
+                                                devSeedStatusMessage = msg
+                                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, cardBorder),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("btn_dev_import_author_history")
+                                    ) {
+                                        Text(
+                                            "Importar histórico do autor (30–31/10)",
+                                            color = primaryText,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            val added = viewModel.devAddDefaultTafUpcomingEvent()
+                                            val msg = if (added) {
+                                                "TAF PMAC (22/11) adicionado"
+                                            } else {
+                                                "TAF PMAC (22/11) já adicionado"
+                                            }
+                                            devSeedStatusMessage = msg
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(1.dp, cardBorder),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("btn_dev_add_taf_pmac")
+                                    ) {
+                                        Text(
+                                            "Adicionar TAF PMAC (22/11)",
+                                            color = primaryText,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+
+                                    devSeedStatusMessage?.let { statusMsg ->
+                                        Text(
+                                            text = statusMsg,
+                                            color = secondaryText,
+                                            fontSize = 10.sp,
+                                            modifier = Modifier.testTag("text_dev_seed_status")
+                                        )
+                                    }
+                                }
+
                                 var selectedRoutineType by remember { mutableStateOf("ABCDE") }
                                 Row(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
