@@ -51,6 +51,9 @@ import com.example.data.model.RunTelemetrySample
 import com.example.data.model.RunningSession
 import com.example.data.model.SprintAnalytics
 import com.example.data.model.formatPaceMinSecQuote
+import com.example.data.model.hasHrCurve
+import com.example.data.model.hasHrZones
+import com.example.data.model.hrCurveUnavailableMessage
 import com.example.data.model.safeCoerceIn
 import com.example.data.model.safeRoundToInt
 import java.text.SimpleDateFormat
@@ -460,7 +463,10 @@ fun RunDossierHeartRateCard(
     val secondaryText = if (isLightMode) Color(0xFF64748B) else DossierTextSecondaryDark
 
     val samples = dossier.telemetrySamples
-    val hrSamples = remember(samples) { samples.filter { it.heartRateBpm > 0 } }
+    val hrSamples = remember(samples) { samples.filter { it.heartRateBpm in 45..240 } }
+    val hasCurve = remember(hrSamples) { hasHrCurve(hrSamples.map { it.heartRateBpm }) }
+    val hasZones = remember(dossier.hrZones5) { hasHrZones(dossier) }
+    val hasSummaryHr = dossier.avgHeartRateBpm > 0 || dossier.maxHeartRateBpm > 0
     var selectedSampleIdx by remember(hrSamples) { mutableStateOf<Int?>(null) }
     var chartWidthPx by remember { mutableFloatStateOf(1f) }
 
@@ -529,28 +535,26 @@ fun RunDossierHeartRateCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Surface(
-                        color = if (dossier.avgHeartRateBpm <= 0) DossierBlue.copy(alpha = 0.14f) else DossierGreen.copy(alpha = 0.14f),
-                        shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(
-                            0.5.dp,
-                            if (dossier.avgHeartRateBpm <= 0) DossierBlue.copy(alpha = 0.4f) else DossierGreen.copy(alpha = 0.4f)
-                        )
-                    ) {
-                        val hrBadgeLabel = if (dossier.avgHeartRateBpm <= 0) {
-                            "Sem dados de FC"
-                        } else {
-                            dossier.dataSourceLabel.substringAfter("GPS + ", dossier.dataSourceLabel.substringAfter("• ", "FC registrada"))
+                    if (hasSummaryHr) {
+                        Surface(
+                            color = DossierGreen.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(0.5.dp, DossierGreen.copy(alpha = 0.4f))
+                        ) {
+                            val hrBadgeLabel = dossier.dataSourceLabel.substringAfter(
+                                "GPS + ",
+                                dossier.dataSourceLabel.substringAfter("• ", "FC registrada")
+                            )
+                            Text(
+                                text = hrBadgeLabel,
+                                color = DossierGreen,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
                         }
-                        Text(
-                            text = hrBadgeLabel,
-                            color = if (dossier.avgHeartRateBpm <= 0) DossierCyan else DossierGreen,
-                            fontSize = 9.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            softWrap = false,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
                     }
 
                     if (onOpenDetailedModal != null) {
@@ -669,22 +673,17 @@ fun RunDossierHeartRateCard(
             }
 
             // 3. Gráfico de Linha Contínua (Canvas) com Linha Tracejada da FC Média
-            if (hrSamples.size < 2) {
-                Box(
+            if (!hasCurve) {
+                Text(
+                    text = hrCurveUnavailableMessage(dossier.avgHeartRateBpm, dossier.maxHeartRateBpm),
+                    color = secondaryText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(104.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (isLightMode) Color(0xFFF1F5F9) else Color(0xFF10141D)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Sem dados de FC",
-                        color = secondaryText,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
+                        .padding(vertical = 4.dp)
+                )
             } else {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -802,107 +801,111 @@ fun RunDossierHeartRateCard(
                 }
             }
 
-            HorizontalDivider(color = cardBorder, thickness = 1.dp)
+            if (hasCurve || hasZones) {
+                HorizontalDivider(color = cardBorder, thickness = 1.dp)
 
-            // 4. Barras Horizontais das 5 Zonas Cardíacas
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(
+                // 4. Barras Horizontais das 5 Zonas Cardíacas
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        text = "Zonas de Frequência Cardíaca (5 Zonas)",
-                        color = secondaryText,
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "% (mm:ss)",
-                        color = secondaryText,
-                        fontSize = 10.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
-
-                if (dossier.hrZones5.isEmpty() || dossier.hrZones5.all { it.percentage <= 0f }) {
-                    Text(
-                        text = "Sem dados de FC",
-                        color = secondaryText,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 10.dp)
-                    )
-                } else dossier.hrZones5.forEach { zoneItem ->
-                    val rawColor = Color(zoneItem.colorHex)
-                    val barColor = if (isLightMode && zoneItem.colorHex == 0xFFFFCA28L) {
-                        Color(0xFFD97706)
-                    } else {
-                        rawColor
-                    }
-                    val pctInt = zoneItem.percentage.safeRoundToInt().safeCoerceIn(0, 100)
-                    val fraction = if (pctInt <= 0) 0f else (pctInt / 100f).safeCoerceIn(0f, 1f)
-
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(barColor, CircleShape)
-                        )
-
                         Text(
-                            text = "Z${zoneItem.zoneIndex} ${zoneItem.label}",
-                            color = primaryText,
-                            fontSize = 12.sp,
+                            text = "Zonas de Frequência Cardíaca (5 Zonas)",
+                            color = secondaryText,
+                            fontSize = 11.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.width(96.dp)
+                            overflow = TextOverflow.Ellipsis
                         )
-
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(8.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(if (isLightMode) Color(0xFFE2E8F0) else Color(0xFF1F2533))
-                        ) {
-                            if (fraction > 0f) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxHeight()
-                                        .fillMaxWidth(fraction)
-                                        .background(barColor, RoundedCornerShape(4.dp))
-                                )
-                            }
+                        if (hasZones) {
+                            Text(
+                                text = "% (mm:ss)",
+                                color = secondaryText,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                softWrap = false
+                            )
                         }
+                    }
 
+                    if (!hasZones) {
                         Text(
-                            text = "${pctInt}% (${zoneItem.formattedDuration})",
-                            color = primaryText,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            textAlign = TextAlign.End,
-                            maxLines = 1,
-                            softWrap = false,
-                            modifier = Modifier.width(82.dp)
+                            text = "Zonas indisponíveis",
+                            color = secondaryText,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
                         )
+                    } else dossier.hrZones5.forEach { zoneItem ->
+                        val rawColor = Color(zoneItem.colorHex)
+                        val barColor = if (isLightMode && zoneItem.colorHex == 0xFFFFCA28L) {
+                            Color(0xFFD97706)
+                        } else {
+                            rawColor
+                        }
+                        val pctInt = zoneItem.percentage.safeRoundToInt().safeCoerceIn(0, 100)
+                        val fraction = if (pctInt <= 0) 0f else (pctInt / 100f).safeCoerceIn(0f, 1f)
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(barColor, CircleShape)
+                            )
+
+                            Text(
+                                text = "Z${zoneItem.zoneIndex} ${zoneItem.label}",
+                                color = primaryText,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.width(96.dp)
+                            )
+
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(if (isLightMode) Color(0xFFE2E8F0) else Color(0xFF1F2533))
+                            ) {
+                                if (fraction > 0f) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxHeight()
+                                            .fillMaxWidth(fraction)
+                                            .background(barColor, RoundedCornerShape(4.dp))
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = "${pctInt}% (${zoneItem.formattedDuration})",
+                                color = primaryText,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.End,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.width(82.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -3023,7 +3026,7 @@ fun RunDossierEnduranceSubstrateLt1Lt2Card(
                     letterSpacing = 0.4.sp
                 )
                 Text(
-                    text = if (dossier.avgHeartRateBpm <= 0) {
+                    text = if (dossier.avgHeartRateBpm <= 0 && dossier.maxHeartRateBpm <= 0) {
                         "Sem dados de FC para calcular limiares (LT1/LT2) e substrato energético."
                     } else {
                         "Dados insuficientes: informe a idade ou calibração de FCmáx no perfil para calcular limiares (LT1/LT2) e zonas."

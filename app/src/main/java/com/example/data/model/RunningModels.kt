@@ -2313,6 +2313,43 @@ fun formatPaceMinSecQuote(paceSecPerKm: Int): String {
 }
 
 /**
+ * Extrai amostras válidas de FC (45..240 bpm) para a curva do gráfico,
+ * priorizando `dossier.telemetrySamples` e usando `hrTimeline` como fallback.
+ */
+fun extractValidHrCurveSamples(
+    dossier: RunPhysiologyDossier,
+    hrTimeline: String? = null
+): List<Int> {
+    return dossier.telemetrySamples
+        .map { it.heartRateBpm }
+        .filter { it in 45..240 }
+        .ifEmpty {
+            hrTimeline.toHrTimelineList().filter { it in 45..240 }
+        }
+}
+
+/**
+ * Regra única: existe curva de FC desenhável quando há ao menos 2 leituras válidas (45..240 bpm).
+ */
+fun hasHrCurve(samples: List<Int>): Boolean = samples.count { it in 45..240 } >= 2
+
+/**
+ * Regra única: existem zonas de FC exibíveis quando a lista não está vazia e há percentual > 0.
+ */
+fun hasHrZones(zones: List<HrZone5Item>): Boolean =
+    zones.isNotEmpty() && zones.any { it.percentage > 0f }
+
+fun hasHrZones(dossier: RunPhysiologyDossier): Boolean = hasHrZones(dossier.hrZones5)
+
+/**
+ * Aviso curto padrão quando não há curva de FC:
+ * - Se média ou máxima > 0: "Curva de FC não registrada"
+ * - Se ambas forem 0: "Sem dados de FC"
+ */
+fun hrCurveUnavailableMessage(avgHrBpm: Int, maxHrBpm: Int): String =
+    if (avgHrBpm > 0 || maxHrBpm > 0) "Curva de FC não registrada" else "Sem dados de FC"
+
+/**
  * Função única de cálculo de calorias ativas de corrida (`pesoKg × km × 1.036`).
  * Usa o peso real do perfil (via `resolveValidWeightKgOrNull` / `resolveWeightKg`); sem peso válido (> 0),
  * retorna `null` em vez de assumir 70 kg silenciosamente.

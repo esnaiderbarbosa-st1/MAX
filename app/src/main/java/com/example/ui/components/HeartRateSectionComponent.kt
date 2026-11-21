@@ -43,6 +43,10 @@ import com.example.data.model.RoutePointItem
 import com.example.data.model.RunPhysiologyDossier
 import com.example.data.model.calculateEffectiveMaxHr
 import com.example.data.model.computeCoherent5ZoneDistribution
+import com.example.data.model.extractValidHrCurveSamples
+import com.example.data.model.hasHrCurve
+import com.example.data.model.hasHrZones
+import com.example.data.model.hrCurveUnavailableMessage
 import com.example.ui.theme.RunColors
 import java.util.Locale
 import kotlin.math.abs
@@ -429,10 +433,10 @@ fun FullscreenSessionHeartRateModal(
     val validAge = athleteAge?.takeIf { it in 10..100 }
     val effectiveSamples = remember(hrSamples, dossier.telemetrySamples) {
         val raw = hrSamples.filter { it in 45..240 }
-        if (raw.size >= 2) {
+        if (hasHrCurve(raw)) {
             raw
         } else {
-            dossier.telemetrySamples.map { it.heartRateBpm }.filter { it in 45..240 }
+            extractValidHrCurveSamples(dossier)
         }
     }
     val calibratedMaxHr = remember(validAge, dossier.maxHeartRateBpm, dossier.effectiveMaxHeartRateBpm) {
@@ -517,6 +521,9 @@ fun FullscreenHeartRateAnalysisDialog(
             emptyList()
         }
     }
+
+    val hasCurve = remember(effectiveSamples) { hasHrCurve(effectiveSamples) }
+    val hasZones = remember(coherent5Zones) { hasHrZones(coherent5Zones) }
 
     val recoveryDropBpm = remember(effectiveSamples, splits) {
         calculateAverageWalkRecoveryDropBpm(effectiveSamples, splits)
@@ -753,7 +760,7 @@ fun FullscreenHeartRateAnalysisDialog(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = if (effectiveSamples.size >= 2 && recoveryDropBpm != null) "-$recoveryDropBpm bpm" else "--",
+                                    text = if (hasCurve && recoveryDropBpm != null) "-$recoveryDropBpm bpm" else "--",
                                     color = Color(0xFF00E676),
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Black
@@ -775,21 +782,17 @@ fun FullscreenHeartRateAnalysisDialog(
                                 .padding(horizontal = 14.dp, vertical = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            if (effectiveSamples.size < 2) {
-                                Box(
+                            if (!hasCurve) {
+                                Text(
+                                    text = hrCurveUnavailableMessage(avgHr, maxHr),
+                                    color = secondaryText,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    textAlign = TextAlign.Center,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(140.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = "Sem dados de FC",
-                                        color = secondaryText,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
+                                        .padding(vertical = 4.dp)
+                                )
                             } else {
                                 val activeIdx = scrubbedIndex?.coerceIn(0, (effectiveSamples.size - 1).coerceAtLeast(0))
                                 if (activeIdx != null) {
@@ -985,137 +988,141 @@ fun FullscreenHeartRateAnalysisDialog(
                     }
 
                     // 3. DISTRIBUIÇÃO REAL DE TEMPO E PERCENTUAL NAS 5 ZONAS (Z1 A Z5)
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = cardColor),
-                        shape = RoundedCornerShape(16.dp),
-                        border = BorderStroke(1.dp, cardBorder)
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                    if (hasCurve || hasZones) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = cardColor),
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, cardBorder)
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Text(
-                                    text = "DISTRIBUIÇÃO NAS 5 ZONAS (Z1 – Z5)",
-                                    color = primaryText,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Black,
-                                    maxLines = 1
-                                )
-                                Text(
-                                    text = "% (MM:SS)",
-                                    color = secondaryText,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                            }
-
-                            if (coherent5Zones.isEmpty() || coherent5Zones.all { it.percentage <= 0f }) {
-                                Text(
-                                    text = "Sem dados de FC",
-                                    color = secondaryText,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 16.dp)
-                                )
-                            } else coherent5Zones.forEach { zItem ->
-                                val zColor = Color(zItem.colorHex)
-                                val pctInt = zItem.percentage.roundToInt().coerceIn(0, 100)
-                                val progressFraction = if (pctInt <= 0) 0f else (pctInt / 100f).coerceIn(0f, 1f)
-                                val rangeLabel = if (zItem.zoneIndex == 1) {
-                                    "≤ ${zItem.maxBpm} bpm (<62% FCmáx)"
-                                } else if (zItem.zoneIndex == 5) {
-                                    "≥ ${zItem.minBpm} bpm (>92% FCmáx)"
-                                } else {
-                                    "${zItem.minBpm}–${zItem.maxBpm} bpm"
-                                }
-
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFF0D0F14), RoundedCornerShape(10.dp))
-                                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .padding(end = 8.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Surface(
-                                                color = zColor.copy(alpha = 0.22f),
-                                                shape = RoundedCornerShape(6.dp)
-                                            ) {
-                                                Text(
-                                                    text = "Z${zItem.zoneIndex}",
-                                                    color = zColor,
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Black,
-                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                                )
-                                            }
-                                            Column {
-                                                Text(
-                                                    text = zItem.label,
-                                                    color = primaryText,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                                Text(
-                                                    text = rangeLabel,
-                                                    color = secondaryText,
-                                                    fontSize = 10.sp,
-                                                    maxLines = 1
-                                                )
-                                            }
-                                        }
-
+                                    Text(
+                                        text = "DISTRIBUIÇÃO NAS 5 ZONAS (Z1 – Z5)",
+                                        color = primaryText,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Black,
+                                        maxLines = 1
+                                    )
+                                    if (hasZones) {
                                         Text(
-                                            text = "${pctInt}% (${zItem.formattedDuration})",
-                                            color = if (pctInt > 0) primaryText else secondaryText,
-                                            fontSize = 12.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontWeight = FontWeight.Black,
+                                            text = "% (MM:SS)",
+                                            color = secondaryText,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
                                             maxLines = 1,
                                             softWrap = false
                                         )
                                     }
+                                }
 
-                                    Box(
+                                if (!hasZones) {
+                                    Text(
+                                        text = "Zonas indisponíveis",
+                                        color = secondaryText,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        textAlign = TextAlign.Center,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(7.dp)
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(if (isLightMode) Color(0xFFE2E8F0) else Color(0xFF1E2433))
+                                            .padding(vertical = 4.dp)
+                                    )
+                                } else coherent5Zones.forEach { zItem ->
+                                    val zColor = Color(zItem.colorHex)
+                                    val pctInt = zItem.percentage.roundToInt().coerceIn(0, 100)
+                                    val progressFraction = if (pctInt <= 0) 0f else (pctInt / 100f).coerceIn(0f, 1f)
+                                    val rangeLabel = if (zItem.zoneIndex == 1) {
+                                        "≤ ${zItem.maxBpm} bpm (<62% FCmáx)"
+                                    } else if (zItem.zoneIndex == 5) {
+                                        "≥ ${zItem.minBpm} bpm (>92% FCmáx)"
+                                    } else {
+                                        "${zItem.minBpm}–${zItem.maxBpm} bpm"
+                                    }
+
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color(0xFF0D0F14), RoundedCornerShape(10.dp))
+                                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        if (progressFraction > 0f) {
-                                            Box(
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
                                                 modifier = Modifier
-                                                    .fillMaxHeight()
-                                                    .fillMaxWidth(progressFraction)
-                                                    .background(zColor, RoundedCornerShape(4.dp))
+                                                    .weight(1f)
+                                                    .padding(end = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Surface(
+                                                    color = zColor.copy(alpha = 0.22f),
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "Z${zItem.zoneIndex}",
+                                                        color = zColor,
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Black,
+                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                                Column {
+                                                    Text(
+                                                        text = zItem.label,
+                                                        color = primaryText,
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Text(
+                                                        text = rangeLabel,
+                                                        color = secondaryText,
+                                                        fontSize = 10.sp,
+                                                        maxLines = 1
+                                                    )
+                                                }
+                                            }
+
+                                            Text(
+                                                text = "${pctInt}% (${zItem.formattedDuration})",
+                                                color = if (pctInt > 0) primaryText else secondaryText,
+                                                fontSize = 12.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = FontWeight.Black,
+                                                maxLines = 1,
+                                                softWrap = false
                                             )
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(7.dp)
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(if (isLightMode) Color(0xFFE2E8F0) else Color(0xFF1E2433))
+                                        ) {
+                                            if (progressFraction > 0f) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxHeight()
+                                                        .fillMaxWidth(progressFraction)
+                                                        .background(zColor, RoundedCornerShape(4.dp))
+                                                )
+                                            }
                                         }
                                     }
                                 }

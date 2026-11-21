@@ -19,6 +19,10 @@ import com.example.data.model.SplitSelectorMode
 import com.example.data.model.UserProfileData
 import com.example.data.model.buildSplitsForMode
 import com.example.data.model.calculateSprintAnalytics
+import com.example.data.model.extractValidHrCurveSamples
+import com.example.data.model.hasHrCurve
+import com.example.data.model.hasHrZones
+import com.example.data.model.hrCurveUnavailableMessage
 import com.example.data.model.isSimulatedOrTestSession
 import com.example.data.model.resolveSessionRoutePointsWithPhases
 import com.example.data.model.toHrTimelineList
@@ -70,7 +74,16 @@ object SessionReportBitmapGenerator {
 
         val splitsCount = effectiveSplits.size.coerceAtLeast(1)
         val splitsBlockHeight = 148f + (splitsCount * 64f)
-        val hrCardHeight = 650f
+
+        val reportHrSamples: List<Int> = extractValidHrCurveSamples(dossier, session.hrTimeline)
+        val hasCurve = hasHrCurve(reportHrSamples)
+        val hasZones = hasHrZones(dossier)
+        val hrCardHeight = when {
+            hasCurve && hasZones -> 650f
+            hasCurve -> 370f
+            hasZones -> 490f
+            else -> 250f
+        }
 
         val hasMainRun = session.mainRunDistanceMeters != null && session.mainRunDistanceMeters > 0 &&
                 session.mainRunDurationSec != null && session.mainRunDurationSec > 0 &&
@@ -604,76 +617,129 @@ object SessionReportBitmapGenerator {
         val maxLblW = paint.measureText(maxLbl)
         canvas.drawText(maxLbl, centerMaxX - (maxLblW / 2f), hrHeaderY + 28f, paint)
 
-        val graphTop = hrHeaderY + 50f
-        val graphHeight = 130f
-        val graphRect = RectF(marginX + 32f, graphTop, marginX + contentWidth - 32f, graphTop + graphHeight)
+        val reportZones = listOf(
+            Pair("Recuperação / Aquec.", 0xFF29B6F6.toInt()),
+            Pair("Queima de Gordura", if (isLightReport) 0xFF10B981.toInt() else 0xFF00E676.toInt()),
+            Pair("Aeróbico", if (isLightReport) 0xFFD97706.toInt() else 0xFFFFCA28.toInt()),
+            Pair("Anaeróbico", 0xFFFF7043.toInt()),
+            Pair("Limite", 0xFFFF5252.toInt())
+        )
+        val zoneColWidth = 250f
 
-        val graphBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (isLightReport) 0xFFF1F5F9.toInt() else 0xFF0F121A.toInt()
-            style = Paint.Style.FILL
-        }
-        canvas.drawRoundRect(graphRect, 16f, 16f, graphBgPaint)
-        val graphBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (isLightReport) 0xFFCBD5E1.toInt() else 0xFF242A38.toInt()
-            style = Paint.Style.STROKE
-            strokeWidth = 1.5f
-        }
-        canvas.drawRoundRect(graphRect, 16f, 16f, graphBorderPaint)
+        fun drawZoneBars(startY: Float) {
+            var zoneRowY = startY
+            reportZones.forEachIndexed { idx, (zoneName, zoneColor) ->
+                val pct = dossier.hrZones5.getOrNull(idx)?.percentage ?: 0f
 
-        val plotTop = graphTop + 10f
-        val plotBottom = graphTop + graphHeight - 28f
-        val plotH = plotBottom - plotTop
-        val minScale = 80f
-        val maxScale = maxOf(190f, (((dossier.maxHeartRateBpm + 9) / 10) * 10).toFloat())
+                paint.color = primaryTextColor
+                paint.textSize = 23f
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                canvas.drawText(zoneName, marginX + 32f, zoneRowY + 14f, paint)
 
-        fun bpmToCanvasY(bpm: Float): Float {
-            val ratio = (bpm - minScale) / (maxScale - minScale).coerceAtLeast(30f)
-            return (plotBottom - (ratio * plotH)).coerceIn(plotTop, plotBottom)
-        }
+                val barLeft = marginX + 32f + zoneColWidth
+                val barRight = marginX + contentWidth - 110f
+                val barWidthTotal = barRight - barLeft
+                val barTrackRect = RectF(barLeft, zoneRowY + 2f, barRight, zoneRowY + 16f)
 
-        val topGuideBpm = (maxScale - 5f).coerceAtLeast(180f)
-        val guideBpms = listOf(topGuideBpm, 155f, 130f, 105f, 80f)
-        val dottedGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (isLightReport) 0x8094A3B8.toInt() else 0x38FFFFFF.toInt()
-            style = Paint.Style.STROKE
-            strokeWidth = 1.5f
-            pathEffect = android.graphics.DashPathEffect(floatArrayOf(6f, 6f), 0f)
-        }
-        val solidBasePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = if (isLightReport) 0xFF94A3B8.toInt() else 0x55FFFFFF.toInt()
-            style = Paint.Style.STROKE
-            strokeWidth = 1.8f
-        }
-        paint.textSize = 18f
-        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        paint.color = if (isLightReport) 0xFF64748B.toInt() else 0xFF94A3B8.toInt()
+                val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = if (isLightReport) 0xFFE2E8F0.toInt() else 0xFF242A38.toInt()
+                    style = Paint.Style.FILL
+                }
+                canvas.drawRoundRect(barTrackRect, 7f, 7f, trackPaint)
 
-        guideBpms.forEach { gBpm ->
-            val gy = bpmToCanvasY(gBpm)
-            val linePaintToUse = if (gBpm <= 80f) solidBasePaint else dottedGuidePaint
-            canvas.drawLine(graphRect.left + 12f, gy, graphRect.right - 56f, gy, linePaintToUse)
-            canvas.drawText(gBpm.toInt().toString(), graphRect.right - 48f, gy + 6f, paint)
-        }
+                val fillWidth = (pct / 100f) * barWidthTotal
+                if (pct > 0f) {
+                    val fillRect = RectF(barLeft, zoneRowY + 2f, barLeft + fillWidth.coerceAtLeast(10f), zoneRowY + 16f)
+                    val fillZonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = zoneColor
+                        style = Paint.Style.FILL
+                    }
+                    canvas.drawRoundRect(fillRect, 7f, 7f, fillZonePaint)
+                }
 
-        val graphPlotRight = graphRect.right - 58f
-        val graphPlotLeft = graphRect.left + 16f
-        val graphPlotWidth = graphPlotRight - graphPlotLeft
+                paint.color = primaryTextColor
+                paint.textSize = 23f
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                val pctStr = "${pct.roundToInt()}%"
+                canvas.drawText(pctStr, barRight + 16f, zoneRowY + 14f, paint)
 
-        val reportHrSamples: List<Int> = dossier.telemetrySamples
-            .map { it.heartRateBpm }
-            .filter { it in 45..240 }
-            .ifEmpty {
-                session.hrTimeline.toHrTimelineList().filter { it in 45..240 }
+                zoneRowY += 46f
             }
+        }
 
-        if (reportHrSamples.size < 2) {
+        if (!hasCurve) {
             paint.textSize = 24f
             paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            paint.color = if (isLightReport) 0xFF64748B.toInt() else 0xFF94A3B8.toInt()
+            paint.color = secondaryTextColor
             paint.textAlign = Paint.Align.CENTER
-            canvas.drawText("Sem dados de FC", graphRect.centerX(), graphRect.centerY() + 8f, paint)
+            val noticeY = if (hasZones) hrHeaderY + 76f else hrHeaderY + 92f
+            canvas.drawText(
+                hrCurveUnavailableMessage(dossier.avgHeartRateBpm, dossier.maxHeartRateBpm),
+                marginX + (contentWidth / 2f),
+                noticeY,
+                paint
+            )
             paint.textAlign = Paint.Align.LEFT
+
+            if (hasZones) {
+                drawZoneBars(hrHeaderY + 120f)
+            }
         } else {
+            val graphTop = hrHeaderY + 50f
+            val graphHeight = 130f
+            val graphRect = RectF(marginX + 32f, graphTop, marginX + contentWidth - 32f, graphTop + graphHeight)
+
+            val graphBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (isLightReport) 0xFFF1F5F9.toInt() else 0xFF0F121A.toInt()
+                style = Paint.Style.FILL
+            }
+            canvas.drawRoundRect(graphRect, 16f, 16f, graphBgPaint)
+            val graphBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (isLightReport) 0xFFCBD5E1.toInt() else 0xFF242A38.toInt()
+                style = Paint.Style.STROKE
+                strokeWidth = 1.5f
+            }
+            canvas.drawRoundRect(graphRect, 16f, 16f, graphBorderPaint)
+
+            val plotTop = graphTop + 10f
+            val plotBottom = graphTop + graphHeight - 28f
+            val plotH = plotBottom - plotTop
+            val minScale = 80f
+            val maxScale = maxOf(190f, (((dossier.maxHeartRateBpm + 9) / 10) * 10).toFloat())
+
+            fun bpmToCanvasY(bpm: Float): Float {
+                val ratio = (bpm - minScale) / (maxScale - minScale).coerceAtLeast(30f)
+                return (plotBottom - (ratio * plotH)).coerceIn(plotTop, plotBottom)
+            }
+
+            val topGuideBpm = (maxScale - 5f).coerceAtLeast(180f)
+            val guideBpms = listOf(topGuideBpm, 155f, 130f, 105f, 80f)
+            val dottedGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (isLightReport) 0x8094A3B8.toInt() else 0x38FFFFFF.toInt()
+                style = Paint.Style.STROKE
+                strokeWidth = 1.5f
+                pathEffect = android.graphics.DashPathEffect(floatArrayOf(6f, 6f), 0f)
+            }
+            val solidBasePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (isLightReport) 0xFF94A3B8.toInt() else 0x55FFFFFF.toInt()
+                style = Paint.Style.STROKE
+                strokeWidth = 1.8f
+            }
+            paint.textSize = 18f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+            paint.color = if (isLightReport) 0xFF64748B.toInt() else 0xFF94A3B8.toInt()
+
+            guideBpms.forEach { gBpm ->
+                val gy = bpmToCanvasY(gBpm)
+                val linePaintToUse = if (gBpm <= 80f) solidBasePaint else dottedGuidePaint
+                canvas.drawLine(graphRect.left + 12f, gy, graphRect.right - 56f, gy, linePaintToUse)
+                canvas.drawText(gBpm.toInt().toString(), graphRect.right - 48f, gy + 6f, paint)
+            }
+
+            val graphPlotRight = graphRect.right - 58f
+            val graphPlotLeft = graphRect.left + 16f
+            val graphPlotWidth = graphPlotRight - graphPlotLeft
+
             val stepX = graphPlotWidth / (reportHrSamples.size - 1).coerceAtLeast(1)
             val curvePath = android.graphics.Path()
 
@@ -729,81 +795,34 @@ object SessionReportBitmapGenerator {
                 shader = lineShader
             }
             canvas.drawPath(curvePath, curvePaint)
-        }
 
-        // Régua de Tempo na Base 100% coerente com o card Tempo (HH:MM:SS) -> dossier.durationSeconds
-        val xTimeLabels = com.example.ui.components.buildTimeAxisLabels(dossier.durationSeconds, tickCount = 2)
-        paint.textSize = 18f
-        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        paint.color = if (isLightReport) 0xFF64748B.toInt() else 0xFF94A3B8.toInt()
-        xTimeLabels.forEachIndexed { idx, tLabel ->
-            val frac = idx.toFloat() / (xTimeLabels.size - 1).coerceAtLeast(1)
-            val tx = graphPlotLeft + frac * graphPlotWidth
-            val tw = paint.measureText(tLabel)
-            val alignedX = when (idx) {
-                0 -> tx
-                xTimeLabels.lastIndex -> tx - tw
-                else -> tx - (tw / 2f)
+            // Régua de Tempo na Base 100% coerente com o card Tempo (HH:MM:SS) -> dossier.durationSeconds
+            val xTimeLabels = com.example.ui.components.buildTimeAxisLabels(dossier.durationSeconds, tickCount = 2)
+            paint.textSize = 18f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+            paint.color = if (isLightReport) 0xFF64748B.toInt() else 0xFF94A3B8.toInt()
+            xTimeLabels.forEachIndexed { idx, tLabel ->
+                val frac = idx.toFloat() / (xTimeLabels.size - 1).coerceAtLeast(1)
+                val tx = graphPlotLeft + frac * graphPlotWidth
+                val tw = paint.measureText(tLabel)
+                val alignedX = when (idx) {
+                    0 -> tx
+                    xTimeLabels.lastIndex -> tx - tw
+                    else -> tx - (tw / 2f)
+                }
+                canvas.drawText(tLabel, alignedX, graphTop + graphHeight - 7f, paint)
             }
-            canvas.drawText(tLabel, alignedX, graphTop + graphHeight - 7f, paint)
-        }
 
-        // Zonas de FC Calibradas por effectiveMaxHr (sincronizadas com o Dossiê)
-        val reportZones = listOf(
-            Pair("Recuperação / Aquec.", 0xFF29B6F6.toInt()),
-            Pair("Queima de Gordura", if (isLightReport) 0xFF10B981.toInt() else 0xFF00E676.toInt()),
-            Pair("Aeróbico", if (isLightReport) 0xFFD97706.toInt() else 0xFFFFCA28.toInt()),
-            Pair("Anaeróbico", 0xFFFF7043.toInt()),
-            Pair("Limite", 0xFFFF5252.toInt())
-        )
-
-        var zoneRowY = graphTop + graphHeight + 36f
-        val zoneColWidth = 250f
-
-        if (dossier.hrZones5.isEmpty() || dossier.hrZones5.all { it.percentage <= 0f }) {
-            paint.color = secondaryTextColor
-            paint.textSize = 24f
-            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            paint.textAlign = Paint.Align.CENTER
-            canvas.drawText("Sem dados de FC", marginX + (contentWidth / 2f), zoneRowY + 90f, paint)
-            paint.textAlign = Paint.Align.LEFT
-        } else {
-            reportZones.forEachIndexed { idx, (zoneName, zoneColor) ->
-                val pct = dossier.hrZones5.getOrNull(idx)?.percentage ?: 0f
-
-                paint.color = primaryTextColor
+            val zoneRowStartY = graphTop + graphHeight + 36f
+            if (!hasZones) {
+                paint.color = secondaryTextColor
                 paint.textSize = 23f
                 paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                canvas.drawText(zoneName, marginX + 32f, zoneRowY + 14f, paint)
-
-                val barLeft = marginX + 32f + zoneColWidth
-                val barRight = marginX + contentWidth - 110f
-                val barWidthTotal = barRight - barLeft
-                val barTrackRect = RectF(barLeft, zoneRowY + 2f, barRight, zoneRowY + 16f)
-
-                val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = if (isLightReport) 0xFFE2E8F0.toInt() else 0xFF242A38.toInt()
-                    style = Paint.Style.FILL
-                }
-                canvas.drawRoundRect(barTrackRect, 7f, 7f, trackPaint)
-
-                val fillWidth = (pct / 100f) * barWidthTotal
-                if (pct > 0f) {
-                    val fillRect = RectF(barLeft, zoneRowY + 2f, barLeft + fillWidth.coerceAtLeast(10f), zoneRowY + 16f)
-                    val fillZonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        color = zoneColor
-                        style = Paint.Style.FILL
-                    }
-                    canvas.drawRoundRect(fillRect, 7f, 7f, fillZonePaint)
-                }
-
-                paint.color = primaryTextColor
-                paint.textSize = 23f
-                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                val pctStr = "${pct.roundToInt()}%"
-                canvas.drawText(pctStr, barRight + 16f, zoneRowY + 14f, paint)
-
-                zoneRowY += 46f
+                paint.textAlign = Paint.Align.CENTER
+                canvas.drawText("Zonas indisponíveis", marginX + (contentWidth / 2f), zoneRowStartY + 18f, paint)
+                paint.textAlign = Paint.Align.LEFT
+            } else {
+                drawZoneBars(zoneRowStartY)
             }
         }
 
